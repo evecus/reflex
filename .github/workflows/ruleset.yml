@@ -27,8 +27,7 @@ jobs:
           fi
 
           echo "Downloading: $DOWNLOAD_URL"
-          curl -sSfL "$DOWNLOAD_URL" -o reflex.tar.gz
-          tar -xzf reflex.tar.gz
+          curl -sSfL "$DOWNLOAD_URL" -o reflex
           chmod +x reflex
           ./reflex --version
 
