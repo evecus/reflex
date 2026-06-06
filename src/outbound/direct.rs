@@ -26,25 +26,6 @@ use crate::{
     },
 };
 
-/// 直连 UDP 出站的 recv_from 空闲超时。
-///
-/// 与 dispatcher 的 `udp_timeout_for_port` 保持一致，避免 direct 出站的
-/// UDP socket 比上层会话更早销毁。
-///
-/// 原来硬编码 30s 导致 tproxy 模式下 QUIC/HTTP3（UDP 443）图片加载失败：
-/// - 浏览器对 HTTPS 站点自动尝试 QUIC（UDP 443）
-/// - 页面主体加载完后 QUIC 连接进入空闲
-/// - viewport 外的图片（懒加载）可能 30s 后才触发
-/// - 此时 direct 出站的 socket 已因 30s 无回包超时销毁
-/// - 重建连接时出现延迟或失败，表现为直连图片加载卡住
-/// - 全局代理不受影响：代理出站把 QUIC 封装进 TCP 隧道，不依赖本地 UDP socket 保活
-fn udp_recv_idle_timeout(dst_port: u16) -> tokio::time::Duration {
-    match dst_port {
-        53 | 123 | 3478 => tokio::time::Duration::from_secs(10), // DNS/NTP/STUN 短超时
-        _ => tokio::time::Duration::from_secs(300),              // 其他（含 443/QUIC）5 分钟
-    }
-}
-
 // ── Direct ────────────────────────────────────────────────────────────────────
 
 pub struct DirectOutbound {
@@ -215,8 +196,8 @@ impl Outbound for DirectOutbound {
         }
 
         // Task 2：持续从游戏服务器接收回包，转发给客户端（tproxy writeback）
+        // 5 秒无包后退出，此时 socket 销毁，会话结束
         // lifetime_guards 持有 ConnGuard / UdpGuard，确保连接在 clash API 中保持可见
-        let recv_idle_timeout = udp_recv_idle_timeout(dst.port());
         let sock_recv = sock;
         let guards = packet.lifetime_guards;
         tokio::spawn(async move {
@@ -226,7 +207,7 @@ impl Outbound for DirectOutbound {
                     break;
                 }
                 match tokio::time::timeout(
-                    recv_idle_timeout,
+                    tokio::time::Duration::from_secs(30),
                     sock_recv.recv_from(&mut buf),
                 )
                 .await
@@ -247,7 +228,8 @@ impl Outbound for DirectOutbound {
                         break;
                     }
                     Err(_) => {
-                        debug!(tag=%tag, dst=%dst, timeout=?recv_idle_timeout, "direct udp: idle timeout, closing recv loop");
+                        // 30 秒内无回包，退出收包循环（会话空闲超时）
+                        debug!(tag=%tag, dst=%dst, "direct udp: idle timeout (30s), closing recv loop");
                         break;
                     }
                 }
