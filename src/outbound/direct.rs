@@ -63,7 +63,13 @@ impl DirectOutbound {
     /// 原来用 `socket2::Socket::connect`（同步）再转 tokio，改为用
     /// `tokio::net::TcpSocket` 的异步 `connect`，彻底避免在 async 上下文中
     /// 执行阻塞调用。
+    ///
+    /// 修复：加入 TCP_CONNECT_TIMEOUT 连接超时（默认 5 秒），与 sing-box 保持一致。
+    /// 原来没有超时限制，对端不回 SYN-ACK 时会等待系统 TCP 重传超时（Linux 约
+    /// 127 秒），导致直连连接长时间卡死。
     async fn tcp_connect_addr(&self, addr: SocketAddr) -> anyhow::Result<TcpStream> {
+        let connect_timeout = tokio::time::Duration::from_secs(Self::TCP_CONNECT_TIMEOUT_SECS);
+
         let stream = if let Some(bind_ip) = &self.config.bind_address {
             let bind_addr: SocketAddr = format!("{bind_ip}:0").parse()?;
             let socket = if bind_addr.is_ipv6() {
@@ -73,14 +79,20 @@ impl DirectOutbound {
             };
             socket.set_reuseaddr(true)?;
             socket.bind(bind_addr)?;
-            socket.connect(addr).await?
+            tokio::time::timeout(connect_timeout, socket.connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("direct tcp connect timeout ({}s) to {}", Self::TCP_CONNECT_TIMEOUT_SECS, addr))??
         } else {
-            TcpStream::connect(addr).await?
+            tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("direct tcp connect timeout ({}s) to {}", Self::TCP_CONNECT_TIMEOUT_SECS, addr))??
         };
         set_tcp_opts(&stream)?;
         apply_mark_to_tcp(&stream, self.routing_mark)?;
         Ok(stream)
     }
+
+    const TCP_CONNECT_TIMEOUT_SECS: u64 = 5;
 
     /// 为单次 UDP 发送创建一个独立 socket。
     ///
