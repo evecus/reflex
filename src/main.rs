@@ -11,6 +11,8 @@ use reflex::ruleset::{CompiledRuleSet, LoadedRuleSet, MatchTarget, RuleSet};
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+
+
 // ── ruleset 子命令 ─────────────────────────────────────────────────────────────
 
 /// 从参数列表中找到 `-o <value>`，返回输出路径。
@@ -254,8 +256,6 @@ fn find_config_in_dir(dir: &std::path::Path) -> anyhow::Result<std::path::PathBu
 async fn run_proxy(args: Vec<String>) -> anyhow::Result<()> {
     use std::path::PathBuf;
 
-    #[cfg(unix)]
-    raise_nofile_limit();
 
     #[cfg(feature = "outbound-net")]
     rustls::crypto::ring::default_provider()
