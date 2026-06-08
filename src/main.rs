@@ -11,28 +11,6 @@ use reflex::ruleset::{CompiledRuleSet, LoadedRuleSet, MatchTarget, RuleSet};
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(unix)]
-fn raise_nofile_limit() {
-    unsafe {
-        let mut rl = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) == 0 {
-            let target = rl.rlim_max.min(1 << 20);
-            if rl.rlim_cur < target {
-                rl.rlim_cur = target;
-                if libc::setrlimit(libc::RLIMIT_NOFILE, &rl) != 0 {
-                    let e = std::io::Error::last_os_error();
-                    eprintln!("[warn] setrlimit RLIMIT_NOFILE failed: {e}");
-                } else {
-                    eprintln!("[info] raised RLIMIT_NOFILE to {target}");
-                }
-            }
-        }
-    }
-}
-
 // ── ruleset 子命令 ─────────────────────────────────────────────────────────────
 
 /// 从参数列表中找到 `-o <value>`，返回输出路径。
