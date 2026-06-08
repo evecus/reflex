@@ -11,7 +11,27 @@ use reflex::ruleset::{CompiledRuleSet, LoadedRuleSet, MatchTarget, RuleSet};
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-
+#[cfg(unix)]
+fn raise_nofile_limit() {
+    unsafe {
+        let mut rl = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) == 0 {
+            let target = rl.rlim_max.min(1 << 20);
+            if rl.rlim_cur < target {
+                rl.rlim_cur = target;
+                if libc::setrlimit(libc::RLIMIT_NOFILE, &rl) != 0 {
+                    let e = std::io::Error::last_os_error();
+                    eprintln!("[warn] setrlimit RLIMIT_NOFILE failed: {e}");
+                } else {
+                    eprintln!("[info] raised RLIMIT_NOFILE to {target}");
+                }
+            }
+        }
+    }
+}
 
 // ── ruleset 子命令 ─────────────────────────────────────────────────────────────
 
@@ -256,6 +276,8 @@ fn find_config_in_dir(dir: &std::path::Path) -> anyhow::Result<std::path::PathBu
 async fn run_proxy(args: Vec<String>) -> anyhow::Result<()> {
     use std::path::PathBuf;
 
+    #[cfg(unix)]
+    raise_nofile_limit();
 
     #[cfg(feature = "outbound-net")]
     rustls::crypto::ring::default_provider()
