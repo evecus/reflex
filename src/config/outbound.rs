@@ -2,6 +2,168 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+// ── 多路复用（Multiplex / SMux）配置 ─────────────────────────────────────────
+
+/// 通用出站多路复用配置，与 sing-box `multiplex` 字段对齐。
+///
+/// 当前实现 SMux v1/v2（sing-box 默认协议），可在 TCP 单连接上承载多个流，
+/// 减少握手次数、降低延迟。
+///
+/// ```json
+/// "multiplex": {
+///   "enabled": true,
+///   "protocol": "smux",
+///   "max_connections": 4,
+///   "min_streams": 4,
+///   "max_streams": 0,
+///   "padding": false
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiplexConfig {
+    /// 是否启用多路复用，默认 false
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// 多路复用协议：`"smux"`（默认）、`"yamux"`、`"h2mux"`
+    /// 目前实现 smux；yamux/h2mux 配置可解析但降级到 smux
+    #[serde(default = "default_mux_protocol")]
+    pub protocol: String,
+
+    /// 最大物理连接数，0 = 不限（默认 0）
+    #[serde(default)]
+    pub max_connections: usize,
+
+    /// 每条物理连接上打开新流所需的最低现有流数（用于控制何时新建连接），默认 4
+    #[serde(default = "default_min_streams")]
+    pub min_streams: usize,
+
+    /// 每条物理连接允许的最大并发流数，0 = 不限（默认 0）
+    #[serde(default)]
+    pub max_streams: usize,
+
+    /// 是否在 smux 帧上增加随机填充（对抗流量分析）
+    #[serde(default)]
+    pub padding: bool,
+
+    /// Brutal 拥塞控制（仅 H2Mux，保留字段，当前不生效）
+    #[serde(default)]
+    pub brutal: Option<BrutalConfig>,
+}
+
+impl Default for MultiplexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            protocol: default_mux_protocol(),
+            max_connections: 0,
+            min_streams: default_min_streams(),
+            max_streams: 0,
+            padding: false,
+            brutal: None,
+        }
+    }
+}
+
+/// Brutal 拥塞控制配置（兼容 sing-box，当前保留字段）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrutalConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub up_mbps: Option<u64>,
+    pub down_mbps: Option<u64>,
+}
+
+fn default_mux_protocol() -> String { "smux".into() }
+fn default_min_streams() -> usize { 4 }
+
+// ── WireGuard 出站配置 ────────────────────────────────────────────────────────
+
+/// WireGuard 对端配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireGuardPeer {
+    /// 对端公钥（base64 编码）
+    pub public_key: String,
+
+    /// 预共享密钥（可选，base64 编码）
+    #[serde(default)]
+    pub pre_shared_key: Option<String>,
+
+    /// 对端服务器地址（域名或 IP）
+    pub server: String,
+
+    /// 对端服务器端口
+    pub server_port: u16,
+
+    /// 允许路由的 CIDR 列表（AllowedIPs），空 = 0.0.0.0/0 + ::/0
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+}
+
+/// WireGuard 出站配置，与 sing-box `wireguard` 出站字段对齐。
+///
+/// ```json
+/// {
+///   "type": "wireguard",
+///   "tag": "wg-out",
+///   "server": "wg.example.com",
+///   "server_port": 51820,
+///   "local_address": ["10.0.0.2/32", "fd00::2/128"],
+///   "private_key": "<base64>",
+///   "peer_public_key": "<base64>",
+///   "pre_shared_key": "<base64>",
+///   "mtu": 1420,
+///   "workers": 2
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireGuardOutboundConfig {
+    pub tag: String,
+
+    /// WireGuard 服务端地址
+    pub server: String,
+
+    /// WireGuard 服务端端口
+    pub server_port: u16,
+
+    /// 本机 WireGuard 接口地址列表（含前缀长度），如 `["10.0.0.2/32"]`
+    pub local_address: Vec<String>,
+
+    /// 本机私钥（base64）
+    pub private_key: String,
+
+    /// 对端公钥（base64）；与 peers 二选一，两者均填时 peers 优先
+    #[serde(default)]
+    pub peer_public_key: Option<String>,
+
+    /// 预共享密钥（base64，可选）
+    #[serde(default)]
+    pub pre_shared_key: Option<String>,
+
+    /// 多对端配置（高级用法）；不填则用 server/server_port/peer_public_key 构造单对端
+    #[serde(default)]
+    pub peers: Vec<WireGuardPeer>,
+
+    /// MTU，默认 1408
+    #[serde(default = "default_wg_mtu")]
+    pub mtu: u32,
+
+    /// 工作线程数，默认 2
+    #[serde(default = "default_wg_workers")]
+    pub workers: usize,
+
+    /// DNS 服务器列表（用于 WireGuard 隧道内 DNS 解析），可为空
+    #[serde(default)]
+    pub dns_servers: Vec<String>,
+
+    /// 全局 SO_MARK（Linux，通过 global.routing_mark 自动传入，不需手动配置）
+    #[serde(skip)]
+    pub routing_mark: u32,
+}
+
+fn default_wg_mtu() -> u32 { 1408 }
+fn default_wg_workers() -> usize { 2 }
+
 /// 所有出站类型，用 `type` 字段做 tag。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -19,6 +181,7 @@ pub enum OutboundConfig {
     Socks(SocksOutboundConfig),
     Selector(SelectorOutboundConfig),
     UrlTest(UrlTestOutboundConfig),
+    WireGuard(WireGuardOutboundConfig),
 }
 
 impl OutboundConfig {
@@ -36,6 +199,7 @@ impl OutboundConfig {
             Self::Socks(c) => &c.tag,
             Self::Selector(c) => &c.tag,
             Self::UrlTest(c) => &c.tag,
+            Self::WireGuard(c) => &c.tag,
         }
     }
 
@@ -169,6 +333,10 @@ pub struct ShadowsocksOutboundConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
 
+    /// 多路复用配置（SMux/Yamux）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiplex: Option<MultiplexConfig>,
+
     /// 出站本身走哪个 outbound（链式代理，预留）
     #[serde(default)]
     pub detour: Option<String>,
@@ -187,7 +355,6 @@ pub enum ShadowsocksTransportConfig {
 // ── VLESS ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct VlessOutboundConfig {
     pub tag: String,
 
@@ -211,6 +378,10 @@ pub struct VlessOutboundConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<VlessTlsConfig>,
 
+    /// 多路复用配置（SMux/Yamux）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiplex: Option<MultiplexConfig>,
+
     /// 出站本身走哪个 outbound（用于链式代理，暂未实现，预留字段）
     #[serde(default)]
     pub detour: Option<String>,
@@ -229,7 +400,6 @@ pub enum VlessTransportConfig {
 
 /// TCP 传输配置（VLESS over TCP）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct TcpTransportConfig {
     /// 是否启用 HTTP/1.1 伪装（预留）
     #[serde(default)]
@@ -251,7 +421,6 @@ pub struct TcpTransportConfig {
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct VlessTlsConfig {
     /// 是否启用 TLS，默认 false
     #[serde(default)]
@@ -276,11 +445,14 @@ pub struct VlessTlsConfig {
     /// REALITY 配置（存在时启用 REALITY，忽略普通 TLS 验证）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reality: Option<RealityConfig>,
+
+    /// uTLS 浏览器指纹配置（与 sing-box utls 字段对齐）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utls: Option<UtlsConfig>,
 }
 
 /// REALITY 客户端配置（嵌套在 tls 对象内，与 sing-box OutboundRealityOptions 对齐）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct RealityConfig {
     /// 启用标志（sing-box 兼容）
     #[serde(default)]
@@ -296,7 +468,6 @@ pub struct RealityConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WsTransportConfig {
     /// WebSocket 握手路径，默认 "/"
     #[serde(default = "default_ws_path")]
@@ -470,7 +641,6 @@ pub struct XmuxConfig {
 // ── VMess ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct VmessOutboundConfig {
     pub tag: String,
 
@@ -494,6 +664,10 @@ pub struct VmessOutboundConfig {
     #[serde(default = "default_disabled_tls")]
     pub tls: TlsConfig,
 
+    /// 多路复用配置（SMux/Yamux）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiplex: Option<MultiplexConfig>,
+
     #[serde(default)]
     pub detour: Option<String>,
 }
@@ -511,7 +685,6 @@ pub enum VmessTransportConfig {
 // ── Hysteria2 ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Hysteria2OutboundConfig {
     pub tag: String,
 
@@ -543,7 +716,6 @@ pub fn mbps_to_bps(mbps: u64) -> u64 {
 // ── TUIC ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TuicOutboundConfig {
     pub tag: String,
 
@@ -589,7 +761,6 @@ pub struct TuicOutboundConfig {
 ///
 /// TLS 配置通过 `tls` 字段控制（默认启用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TrojanOutboundConfig {
     pub tag: String,
 
@@ -609,6 +780,10 @@ pub struct TrojanOutboundConfig {
     /// TLS 配置（Trojan 通常必须启用 TLS）
     #[serde(default)]
     pub tls: TlsConfig,
+
+    /// 多路复用配置（SMux/Yamux）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiplex: Option<MultiplexConfig>,
 
     /// 出站链式代理（预留）
     #[serde(default)]
@@ -635,13 +810,11 @@ impl Default for TrojanTransportConfig {
 
 /// Trojan over TCP 配置（暂无额外字段，保留扩展空间）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct TrojanTcpConfig {}
 
 // ── Direct / Block ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DirectOutboundConfig {
     pub tag: String,
 
@@ -651,7 +824,6 @@ pub struct DirectOutboundConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct BlockOutboundConfig {
     pub tag: String,
 }
@@ -730,7 +902,6 @@ pub enum SocksVersion {
 // ── Selector / URL-Test ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SelectorOutboundConfig {
     pub tag: String,
 
@@ -752,7 +923,6 @@ pub struct SelectorOutboundConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct UrlTestOutboundConfig {
     pub tag: String,
 
@@ -793,8 +963,38 @@ impl UrlTestOutboundConfig {
 
 // ── 公共 TLS 配置 ─────────────────────────────────────────────────────────────
 
+/// uTLS 支持的浏览器指纹。
+///
+/// 与 sing-box `utls.fingerprint` 字段完全对齐。
+/// 不填时默认使用 `"chrome"`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UtlsFingerprint {
+    /// Chrome（默认，最广泛）
+    #[default]
+    Chrome,
+    /// Firefox
+    Firefox,
+    /// Safari
+    Safari,
+    /// iOS Safari
+    Ios,
+    /// Android 客户端
+    Android,
+    /// Edge
+    Edge,
+    /// 360 浏览器
+    #[serde(rename = "360")]
+    Browser360,
+    /// QQ 浏览器
+    Qq,
+    /// 随机选择一种浏览器指纹
+    Random,
+    /// 使用 Go 标准 crypto/tls（即不伪造指纹）
+    Go,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -822,6 +1022,27 @@ pub struct TlsConfig {
     /// 最高 TLS 版本
     #[serde(default)]
     pub max_version: Option<TlsVersion>,
+
+    /// uTLS 配置：启用浏览器 TLS 指纹伪造。
+    ///
+    /// 与 sing-box `utls` 字段对齐：
+    /// ```json
+    /// "utls": { "enabled": true, "fingerprint": "chrome" }
+    /// ```
+    /// 启用后将向服务端发送真实 Chrome/Firefox/Safari 的 ClientHello 字节，
+    /// 通过大多数基于 TLS 指纹的检测。
+    #[serde(default)]
+    pub utls: Option<UtlsConfig>,
+}
+
+/// uTLS 配置块
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UtlsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 浏览器指纹类型，默认 chrome
+    #[serde(default)]
+    pub fingerprint: UtlsFingerprint,
 }
 
 impl Default for TlsConfig {
@@ -834,6 +1055,7 @@ impl Default for TlsConfig {
             alpn: vec![],
             min_version: None,
             max_version: None,
+            utls: None,
         }
     }
 }

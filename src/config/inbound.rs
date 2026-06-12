@@ -42,7 +42,6 @@ impl InboundConfig {
 // ── TProxy ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TProxyInboundConfig {
     pub tag: String,
 
@@ -68,7 +67,6 @@ pub struct TProxyInboundConfig {
 /// 对应 `iptables -t nat -j REDIRECT` 或 `nftables redirect to` 规则。
 /// 仅支持 TCP；UDP 无法通过 REDIRECT 还原原始目标地址。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RedirInboundConfig {
     pub tag: String,
 
@@ -83,7 +81,6 @@ pub struct RedirInboundConfig {
 // ── Mixed（SOCKS5 + HTTP CONNECT）────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MixedInboundConfig {
     pub tag: String,
 
@@ -107,7 +104,6 @@ pub struct MixedInboundConfig {
 // ── DNS-in ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DnsInboundConfig {
     pub tag: String,
 
@@ -192,7 +188,6 @@ fn default_dns_port() -> u16 {
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TunInboundConfig {
     /// 入站标识，用于路由规则匹配
     pub tag: String,

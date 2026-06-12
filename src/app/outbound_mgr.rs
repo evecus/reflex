@@ -124,6 +124,17 @@ impl OutboundManager {
                 ),
                 #[cfg(not(feature = "outbound-net"))]
                 OutboundConfig::AnyTls(c) => fallback_block(&c.tag, "AnyTLS"),
+
+                #[cfg(feature = "outbound-net")]
+                OutboundConfig::WireGuard(c) => {
+                    let mut cfg = c.clone();
+                    cfg.routing_mark = routing_mark;
+                    Arc::new(
+                        crate::outbound::wireguard::WireGuardOutbound::new(cfg, resolver.clone())?
+                    )
+                }
+                #[cfg(not(feature = "outbound-net"))]
+                OutboundConfig::WireGuard(c) => fallback_block(&c.tag, "WireGuard"),
             };
             map.insert(tag, ob);
         }

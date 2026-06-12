@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 /// 顶层 experimental 配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct ExperimentalConfig {
     #[serde(default)]
     pub cache_file: Option<CacheFileConfig>,
@@ -13,7 +12,6 @@ pub struct ExperimentalConfig {
 
 /// cache_file 子配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CacheFileConfig {
     /// 是否启用缓存文件
     #[serde(default)]
@@ -56,7 +54,6 @@ impl Default for CacheFileConfig {
 
 /// clash_api 子配置（兼容 Clash/Sing-Box 风格 external controller）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ClashApiConfig {
     /// 是否启用 Clash API。配置了 clash_api 时默认启用。
     #[serde(default = "default_true")]

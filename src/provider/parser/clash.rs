@@ -1,7 +1,7 @@
 //! Clash YAML 订阅格式解析器。
 //!
 //! 解析 `proxies:` 字段，将 Clash proxy 对象转换为 Reflex `OutboundConfig`。
-//! 支持：ss、vmess、vless、trojan、hysteria2、tuic、anytls、socks5/socks4a/socks4。
+//! 支持：ss、vmess、vless、trojan、hysteria2、tuic、anytls、socks5/socks4a/socks4、wireguard。
 
 use std::collections::HashMap;
 
@@ -11,7 +11,8 @@ use crate::config::outbound::{
     AnyTlsOutboundConfig, Hysteria2OutboundConfig, OutboundConfig, RealityConfig,
     ShadowsocksOutboundConfig, SocksOutboundConfig, TlsConfig, TrojanOutboundConfig,
     TrojanTransportConfig, TuicOutboundConfig, VlessOutboundConfig, VlessTlsConfig,
-    VlessTransportConfig, VmessOutboundConfig, VmessTransportConfig, WsTransportConfig,
+    VlessTransportConfig, VmessOutboundConfig, VmessTransportConfig, WireGuardOutboundConfig,
+    WireGuardPeer, WsTransportConfig,
 };
 
 /// 解析 Clash YAML 文本，返回 (节点名, OutboundConfig) 列表。
@@ -147,6 +148,7 @@ fn build_outbound(p: ClashProxy) -> anyhow::Result<OutboundConfig> {
         "socks5" => build_socks(tag, p, Some("5")),
         "socks4a" => build_socks(tag, p, Some("4a")),
         "socks4" => build_socks(tag, p, Some("4")),
+        "wireguard" | "wg" => build_wireguard(tag, p),
         other => anyhow::bail!("unsupported proxy type: '{other}'"),
     }
 }
@@ -185,6 +187,7 @@ fn build_ss(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
         plugin_opts,
         transport: None,
         tls: None,
+        multiplex: None,
         detour: None,
     }))
 }
@@ -214,6 +217,7 @@ fn build_vmess(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
         security: p.cipher.unwrap_or_else(|| "auto".to_string()),
         transport,
         tls,
+        multiplex: None,
         detour: None,
     }))
 }
@@ -242,6 +246,7 @@ fn build_vless(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
             ca_path: None,
             alpn: p.alpn.clone().unwrap_or_default(),
             reality,
+            utls: None,
         })
     } else {
         None
@@ -254,6 +259,7 @@ fn build_vless(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
         uuid,
         transport,
         tls,
+        multiplex: None,
         detour: None,
     }))
 }
@@ -283,6 +289,7 @@ fn build_trojan(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
         password,
         transport,
         tls,
+        multiplex: None,
         detour: None,
     }))
 }
@@ -355,6 +362,7 @@ fn build_tls(
         alpn: alpn.unwrap_or_default(),
         min_version: None,
         max_version: None,
+        utls: None,
     }
 }
 
@@ -413,6 +421,89 @@ fn build_socks(
     }))
 }
 
+fn build_wireguard(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
+    // WireGuard Clash 格式（Mihomo/clash-meta 扩展）：
+    // - name: "WG"
+    //   type: wireguard
+    //   server: wg.example.com
+    //   port: 51820
+    //   ip: 10.0.0.2/32
+    //   private-key: <base64>
+    //   public-key: <base64>
+    //   pre-shared-key: <base64>  (optional)
+    //   mtu: 1420                  (optional)
+    //   dns: ["1.1.1.1"]          (optional)
+    let extra = &p._extra;
+
+    let private_key = extra
+        .get("private-key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("wireguard '{}' missing private-key", p.name))?
+        .to_string();
+
+    let peer_public_key = extra
+        .get("public-key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let pre_shared_key = extra
+        .get("pre-shared-key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    // local_address: 从 "ip" 或 "ip6" 字段组装
+    let mut local_address = Vec::new();
+    if let Some(ip) = extra.get("ip").and_then(|v| v.as_str()) {
+        local_address.push(if ip.contains('/') {
+            ip.to_string()
+        } else {
+            format!("{ip}/32")
+        });
+    }
+    if let Some(ip6) = extra.get("ipv6").and_then(|v| v.as_str()) {
+        local_address.push(if ip6.contains('/') {
+            ip6.to_string()
+        } else {
+            format!("{ip6}/128")
+        });
+    }
+    if local_address.is_empty() {
+        local_address.push("10.0.0.2/32".to_string()); // fallback
+    }
+
+    let mtu = extra
+        .get("mtu")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .unwrap_or(1408);
+
+    let dns_servers: Vec<String> = extra
+        .get("dns")
+        .and_then(|v| v.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(OutboundConfig::WireGuard(WireGuardOutboundConfig {
+        tag,
+        server: p.server,
+        server_port: p.port,
+        local_address,
+        private_key,
+        peer_public_key,
+        pre_shared_key,
+        peers: Vec::new(),
+        mtu,
+        workers: 2,
+        dns_servers,
+        routing_mark: 0,
+    }))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,24 +551,29 @@ proxies:
     }
 
     #[test]
-    fn skip_unsupported_type() {
+    fn parse_wireguard_node() {
         let yaml = r#"
 proxies:
   - name: "WireGuard节点"
     type: wireguard
     server: wg.example.com
     port: 51820
-    private-key: "fake-key"
+    ip: 10.0.0.2/32
+    private-key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    public-key: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+    mtu: 1420
   - name: "HK HY2"
     type: hy2
     server: hk.example.com
     port: 443
     password: mypassword
 "#;
-        // wireguard 不支持，被跳过；hy2 保留
+        // wireguard 现在能解析；hy2 也保留
         let nodes = parse_clash_yaml(yaml).unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].0, "HK HY2");
+        assert_eq!(nodes.len(), 2);
+        // 检查 wireguard 节点
+        assert!(matches!(nodes[0].1, OutboundConfig::WireGuard(_)));
+        assert_eq!(nodes[1].0, "HK HY2");
     }
 
     #[test]

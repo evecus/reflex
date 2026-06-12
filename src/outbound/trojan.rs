@@ -52,7 +52,7 @@ pub struct TrojanOutbound {
     config: TrojanOutboundConfig,
     /// 预计算的 56 字节 hex key（密码的 SHA-224）
     key: [u8; KEY_LEN],
-    /// rustls 配置（TLS 模式有效）
+    /// rustls 配置（WS 模式使用）
     tls_config: Arc<rustls::ClientConfig>,
     /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
     routing_mark: u32,
@@ -61,6 +61,7 @@ pub struct TrojanOutbound {
 impl TrojanOutbound {
     pub fn new(config: TrojanOutboundConfig) -> anyhow::Result<Self> {
         let key = derive_key(&config.password);
+        // 始终构建 rustls config（WS connector 需要）；uTLS 通过 connect_tls_or_utls 处理
         let tls_config = build_client_config(&config.tls)?;
         Ok(Self {
             config,
@@ -86,11 +87,11 @@ impl TrojanOutbound {
         Ok(tcp)
     }
 
-    /// 建立 TCP + TLS 连接
-    async fn connect_tls(&self) -> anyhow::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    /// 建立 TCP + TLS 连接（自动选择普通 TLS 或 uTLS）
+    async fn connect_tls(&self) -> anyhow::Result<crate::outbound::tls::TlsStreamBox> {
         let tcp = self.connect_raw_tcp().await?;
         let sni = self.tls_sni();
-        crate::outbound::tls::connect_tls(tcp, sni, self.tls_config.clone()).await
+        crate::outbound::tls::connect_tls_or_utls(tcp, sni, &self.config.tls).await
     }
 
     /// 建立 WebSocket 连接（TLS 在 tokio-tungstenite 内部处理）
@@ -615,6 +616,7 @@ mod tests {
             password: "password".into(),
             transport: TrojanTransportConfig::Tcp(TrojanTcpConfig::default()),
             tls: TlsConfig::default(),
+            multiplex: None,
             detour: None,
         };
         let ob = TrojanOutbound::new(cfg).unwrap();
@@ -644,6 +646,7 @@ mod tests {
             password: "pass".into(),
             transport: TrojanTransportConfig::Tcp(TrojanTcpConfig::default()),
             tls: TlsConfig::default(),
+            multiplex: None,
             detour: None,
         };
         let ob = TrojanOutbound::new(cfg).unwrap();

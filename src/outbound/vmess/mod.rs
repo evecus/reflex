@@ -109,15 +109,16 @@ impl VmessOutbound {
         set_tcp_opts(&tcp)?;
         apply_mark_to_tcp(&tcp, self.routing_mark)?;
         if self.config.tls.enabled {
-            use crate::outbound::tls::connect_tls;
             let sni = self
                 .config
                 .tls
                 .server_name
                 .as_deref()
                 .unwrap_or(server.as_str());
-            let tls = connect_tls(tcp, sni, self.tls_config.clone()).await?;
-            Ok(Box::new(tls))
+            let stream = crate::outbound::tls::connect_tls_or_utls(
+                tcp, sni, &self.config.tls,
+            ).await?;
+            Ok(Box::new(stream))
         } else {
             Ok(Box::new(tcp))
         }

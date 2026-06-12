@@ -629,6 +629,8 @@ pub struct ShadowsocksOutbound {
     tls_config: Arc<rustls::ClientConfig>,
     /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
     routing_mark: u32,
+    /// 多路复用连接池（multiplex.enabled 时非空）
+    mux_pool: Option<Arc<crate::outbound::smux::MultiplexPool>>,
 }
 
 impl ShadowsocksOutbound {
@@ -660,12 +662,36 @@ impl ShadowsocksOutbound {
             build_client_config(config.tls.as_ref().unwrap_or(&dummy))?
         };
 
+        // 多路复用连接池（如果配置了 multiplex.enabled）
+        let mux_pool = if config.multiplex.as_ref().map(|m| m.enabled).unwrap_or(false) {
+            let mux_cfg = config.multiplex.clone().unwrap_or_default();
+            let server = config.server.clone();
+            let port = config.server_port;
+            let mark = 0u32; // will be updated via with_mark; pool is re-created there if needed
+            let pool = crate::outbound::smux::MultiplexPool::new(mux_cfg, move || {
+                let server = server.clone();
+                async move {
+                    let addr: SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
+                        .await?
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("smux dial: DNS failed for {server}"))?;
+                    let tcp = tokio::net::TcpStream::connect(addr).await?;
+                    let b: Box<dyn crate::outbound::smux::AsyncReadWrite> = Box::new(tcp);
+                    Ok(b)
+                }
+            });
+            Some(Arc::new(pool))
+        } else {
+            None
+        };
+
         Ok(Self {
             config,
             method,
             key_material,
             tls_config,
             routing_mark: 0,
+            mux_pool,
         })
     }
 
@@ -920,6 +946,17 @@ impl Outbound for ShadowsocksOutbound {
     async fn handle_tcp(&self, conn: InboundTcpStream) -> anyhow::Result<(u64, u64)> {
         use crate::config::outbound::ShadowsocksTransportConfig;
         debug!(tag = %self.config.tag, target = %conn.target, "shadowsocks tcp relay");
+
+        // 多路复用路径：通过 SMux 逻辑流承载 SS 流量
+        if let Some(ref pool) = self.mux_pool {
+            let mux_stream = pool.acquire().await?;
+            let first_payload = encode_target(&conn.target);
+            let salt = self.random_salt();
+            let subkey = self.derive_subkey(&salt);
+            let ss_stream = ss_wrap_xhttp(mux_stream, self.method, subkey, salt, first_payload).await?;
+            let (bytes_up, bytes_dn) = crate::outbound::relay(conn.stream, ss_stream).await;
+            return Ok((bytes_up, bytes_dn));
+        }
 
         // XHTTP 传输模式：使用泛型 SS 封装流
         if matches!(

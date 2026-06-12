@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// 单个 provider 的顶层配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum ProviderConfig {
     Remote(RemoteProviderConfig),
     Local(LocalProviderConfig),
@@ -21,7 +21,6 @@ impl ProviderConfig {
 
 /// 远端订阅 provider：从 URL 下载节点列表，定时更新，本地缓存。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RemoteProviderConfig {
     /// Provider 唯一标识，在 outbound 里通过此 tag 引用。
     pub tag: String,
@@ -51,7 +50,6 @@ pub struct RemoteProviderConfig {
 
 /// 本地文件 provider：从本地文件读取节点列表，不联网，不定时更新。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct LocalProviderConfig {
     /// Provider 唯一标识。
     pub tag: String,
@@ -66,7 +64,6 @@ pub struct LocalProviderConfig {
 
 /// 健康检测配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HealthCheckConfig {
     /// 测速 URL，默认 `https://www.gstatic.com/generate_204`。
     #[serde(default = "default_health_check_url")]
@@ -83,7 +80,6 @@ pub struct HealthCheckConfig {
 
 /// outbound（selector / urltest）里对 provider 的引用及过滤配置。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct ProviderRef {
     /// 引用的 provider tag 列表。
     #[serde(default)]

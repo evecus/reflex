@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 /// 全局选项，与 dns / log / inbounds 等平级。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct GlobalConfig {
     /// 是否允许 IPv6 流量流经核心。
     ///

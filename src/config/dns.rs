@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 // ── FakeIP 配置 ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct FakeIpConfig {
     /// IPv4 假地址段，如 "198.18.0.0/15"
     #[serde(default)]
@@ -20,7 +19,6 @@ pub struct FakeIpConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct DnsConfig {
     /// DNS 服务器列表
     #[serde(default)]
@@ -65,7 +63,6 @@ pub struct DnsConfig {
 // ── Server ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DnsServerConfig {
     pub tag: String,
 
@@ -173,7 +170,6 @@ pub enum RcodeAction {
 // ── Rule ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DnsRuleConfig {
     /// 匹配指定入站 tag（如来自 dns-in 的查询）
     #[serde(default)]

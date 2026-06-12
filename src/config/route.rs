@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RouteConfig {
     /// 路由规则，顺序匹配，第一条命中生效
     #[serde(default)]
@@ -24,7 +23,6 @@ pub struct RouteConfig {
 /// 一条路由规则，所有非空条件之间是 AND 语义，
 /// 同一条件内多个值是 OR 语义。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RouteRuleConfig {
     // ── 来源条件 ──────────────────────────────────────────────
     /// 来自指定入站 tag
@@ -187,7 +185,6 @@ pub enum RuleSetType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuleSetRef {
     /// 在 rules 中引用的名字
     pub tag: String,

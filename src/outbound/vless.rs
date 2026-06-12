@@ -38,7 +38,7 @@ use crate::{
 use super::reality::reality_connect;
 pub struct VlessOutbound {
     config: VlessOutboundConfig,
-    /// rustls 配置（仅 TLS 模式使用）
+    /// rustls 配置（WS connector 使用；TCP+TLS 路径通过 connect_tcp_tls 动态构建支持 uTLS）
     tls_config: Arc<rustls::ClientConfig>,
     /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
     routing_mark: u32,
@@ -46,10 +46,9 @@ pub struct VlessOutbound {
 
 impl VlessOutbound {
     pub fn new(config: VlessOutboundConfig) -> anyhow::Result<Self> {
-        // 构建 TLS 配置；REALITY 或无 TLS 时构建空配置（不会被实际使用）
+        // 构建 TLS 配置（WS connector 需要）；uTLS 通过 connect_tcp_tls 动态处理
         let tls_config = match &config.tls {
             Some(tls) if tls.enabled && tls.reality.is_none() => {
-                // 普通 TLS
                 let tls_cfg = crate::config::outbound::TlsConfig {
                     enabled: tls.enabled,
                     server_name: tls.server_name.clone(),
@@ -58,6 +57,7 @@ impl VlessOutbound {
                     alpn: tls.alpn.clone(),
                     min_version: None,
                     max_version: None,
+                    utls: None, // WS connector 走 rustls 原生，不做指纹伪造
                 };
                 build_client_config(&tls_cfg)?
             }
@@ -170,8 +170,8 @@ impl VlessOutbound {
         Ok(ws_stream)
     }
 
-    /// 建立 TCP+TLS 连接（普通 TLS 模式）
-    async fn connect_tcp_tls(&self) -> anyhow::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    /// 建立 TCP+TLS 连接（自动选择普通 TLS 或 uTLS）
+    async fn connect_tcp_tls(&self) -> anyhow::Result<crate::outbound::tls::TlsStreamBox> {
         let server = &self.config.server;
         let port = self.config.server_port;
         let sni = self.tls_sni();
@@ -185,7 +185,21 @@ impl VlessOutbound {
         set_tcp_opts(&tcp)?;
         apply_mark_to_tcp(&tcp, self.routing_mark)?;
 
-        crate::outbound::tls::connect_tls(tcp, sni, self.tls_config.clone()).await
+        // 从 VlessTlsConfig 组装通用 TlsConfig
+        let tls_base = match &self.config.tls {
+            Some(vtls) => crate::config::outbound::TlsConfig {
+                enabled: vtls.enabled,
+                server_name: vtls.server_name.clone(),
+                insecure: vtls.insecure,
+                ca_path: vtls.ca_path.clone(),
+                alpn: vtls.alpn.clone(),
+                min_version: None,
+                max_version: None,
+                utls: vtls.utls.clone(),
+            },
+            None => crate::config::outbound::TlsConfig::default(),
+        };
+        crate::outbound::tls::connect_tls_or_utls(tcp, sni, &tls_base).await
     }
 
     /// 建立 TCP+REALITY 连接
@@ -256,6 +270,7 @@ impl VlessOutbound {
                     alpn: t.alpn.clone(),
                     min_version: None,
                     max_version: None,
+                    utls: t.utls.clone(),
                 });
             let stream = xhttp::connect(
                 &self.config.server,
