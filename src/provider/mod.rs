@@ -178,6 +178,7 @@ fn set_outbound_tag(ob: &mut OutboundConfig, tag: &str) {
         OutboundConfig::Socks(c) => c.tag = tag.to_string(),
         OutboundConfig::Selector(c) => c.tag = tag.to_string(),
         OutboundConfig::UrlTest(c) => c.tag = tag.to_string(),
+        OutboundConfig::WireGuard(c) => c.tag = tag.to_string(),
     }
 }
 
