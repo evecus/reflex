@@ -45,6 +45,7 @@ impl RuleSetRegistry {
     }
 
     /// 触发指定 remote 规则集重新下载，更新本地缓存文件，并刷新元数据。
+    /// 支持 `format = "binary"`（默认）和 `format = "source"`（sing-box JSON/文本）。
     /// 失败时返回错误描述。
     pub async fn reload_remote(&self, tag: &str) -> anyhow::Result<()> {
         let rs_ref = self
@@ -67,30 +68,64 @@ impl RuleSetRegistry {
 
         let tag_owned = tag.to_string();
         let path = rs_ref.path.clone();
+        let format = rs_ref.format.clone();
 
-        // 阻塞下载放到专用线程池，避免阻塞 tokio 工作线程
+        // 阻塞下载放到专用线程池
         let data = tokio::task::spawn_blocking(move || download_bytes(&url, &tag_owned))
             .await
             .map_err(|e| anyhow::anyhow!("spawn_blocking panicked: {e}"))??;
 
-        // 覆盖磁盘缓存
-        if let Some(ref p) = path {
-            if let Some(parent) = std::path::Path::new(p).parent() {
-                let _ = std::fs::create_dir_all(parent);
+        use crate::config::route::RuleSetFormat;
+        let rule_count = if format == RuleSetFormat::Source {
+            // source 格式：编译并缓存原始文本
+            let src = String::from_utf8(data).map_err(|e| {
+                anyhow::anyhow!("rule_set '{tag}': downloaded source is not UTF-8: {e}")
+            })?;
+            if let Some(ref p) = path {
+                if let Some(parent) = std::path::Path::new(p).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(p, src.as_bytes()) {
+                    tracing::warn!(tag, path = p, err = %e, "rule_set: failed to write source cache");
+                } else {
+                    tracing::debug!(tag, path = p, "rule_set: source cache updated");
+                }
             }
-            if let Err(e) = std::fs::write(p, &data) {
-                tracing::warn!(tag, path = p, err = %e, "rule_set: failed to write disk cache");
+            // 编译计算规则数
+            let trimmed = src.trim_start();
+            let compiled = if trimmed.starts_with('{') {
+                crate::ruleset::compiler::CompiledRuleSet::from_singbox_json(trimmed)
+                    .map_err(|e| anyhow::anyhow!("rule_set '{tag}': source parse error: {e}"))?
             } else {
-                tracing::debug!(tag, path = p, "rule_set: disk cache updated");
+                crate::ruleset::compiler::CompiledRuleSet::from_text(trimmed)
+                    .map_err(|e| anyhow::anyhow!("rule_set '{tag}': source parse error: {e}"))?
+            };
+            let mut buf = Vec::new();
+            compiled.serialize(&mut buf)
+                .map_err(|e| anyhow::anyhow!("rule_set '{tag}': compile error: {e}"))?;
+            let loaded = crate::ruleset::LoadedRuleSet::from_bytes(&buf)
+                .map_err(|e| anyhow::anyhow!("rule_set '{tag}': internal error: {e}"))?;
+            crate::ruleset::RuleSet::from_loaded(loaded)
+                .map_err(|e| anyhow::anyhow!("rule_set '{tag}': load error: {e}"))?
+                .rule_count()
+        } else {
+            // binary 格式：覆盖磁盘缓存
+            if let Some(ref p) = path {
+                if let Some(parent) = std::path::Path::new(p).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(p, &data) {
+                    tracing::warn!(tag, path = p, err = %e, "rule_set: failed to write disk cache");
+                } else {
+                    tracing::debug!(tag, path = p, "rule_set: disk cache updated");
+                }
             }
-        }
-
-        // 计算新的规则数量
-        let loaded = crate::ruleset::LoadedRuleSet::from_bytes(&data)
-            .map_err(|e| anyhow::anyhow!("rule_set '{tag}': parse error: {e}"))?;
-        let rs = crate::ruleset::RuleSet::from_loaded(loaded)
-            .map_err(|e| anyhow::anyhow!("rule_set '{tag}': compile error: {e}"))?;
-        let rule_count = rs.rule_count();
+            let loaded = crate::ruleset::LoadedRuleSet::from_bytes(&data)
+                .map_err(|e| anyhow::anyhow!("rule_set '{tag}': parse error: {e}"))?;
+            crate::ruleset::RuleSet::from_loaded(loaded)
+                .map_err(|e| anyhow::anyhow!("rule_set '{tag}': compile error: {e}"))?
+                .rule_count()
+        };
 
         let updated_at_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

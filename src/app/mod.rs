@@ -425,6 +425,62 @@ impl App {
             }
         }
 
+        // ── 10. 规则集定时更新任务（update_interval 不为空的 remote 规则集）──────
+        {
+            let remote_intervals: Vec<(String, std::time::Duration)> = config
+                .route
+                .rule_set
+                .iter()
+                .filter(|rs| {
+                    rs.r#type == crate::config::route::RuleSetType::Remote
+                        && rs.update_interval.is_some()
+                })
+                .filter_map(|rs| {
+                    let interval_str = rs.update_interval.as_deref()?;
+                    match crate::config::provider::parse_duration(interval_str) {
+                        Ok(d) => Some((rs.tag.clone(), d)),
+                        Err(e) => {
+                            tracing::warn!(
+                                tag = rs.tag,
+                                interval = interval_str,
+                                "rule_set: invalid update_interval, skipping auto-update: {e}"
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect();
+
+            if !remote_intervals.is_empty() {
+                // 只有启用了 Clash API 时 rs_registry 才被创建；
+                // 定时更新独立于 Clash API，自行创建一个 registry 实例
+                let rs_registry_for_timer = RuleSetRegistry::from_router_meta(
+                    config.route.clone(),
+                    router.ruleset_meta.clone(),
+                );
+
+                for (tag, interval) in remote_intervals {
+                    let registry = rs_registry_for_timer.clone();
+                    tasks.spawn(async move {
+                        let mut ticker = tokio::time::interval(interval);
+                        ticker.tick().await; // 跳过启动时立即触发，首次下载已在 Router::from_config 完成
+                        loop {
+                            ticker.tick().await;
+                            tracing::info!(
+                                tag,
+                                ?interval,
+                                "rule_set: auto-update triggered (update_interval)"
+                            );
+                            match registry.reload_remote(&tag).await {
+                                Ok(()) => tracing::info!(tag, "rule_set: auto-update succeeded"),
+                                Err(e) => tracing::warn!(tag, "rule_set: auto-update failed: {e}"),
+                            }
+                        }
+                    });
+                }
+            }
+        }
+
         Ok(Self { tasks, stats })
     }
 

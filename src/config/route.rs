@@ -184,6 +184,26 @@ pub enum RuleSetType {
     Remote,
 }
 
+/// 规则集文件格式，与 sing-box `format` 字段对齐。
+///
+/// | 值          | 含义                                                        |
+/// |-------------|-------------------------------------------------------------|
+/// | `"binary"`  | 预编译的 `.rrs` 二进制格式（默认）                          |
+/// | `"source"`  | 文本或 sing-box JSON Source Rule Set，运行时自动编译        |
+///
+/// `"source"` 格式支持两种内容：
+/// - sing-box JSON（`{"version":2,"rules":[...]}` 格式，`.json`/`.srs` 文件）
+/// - Reflex 文本格式（每行 `key: value`，`.txt`/`.list` 文件）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleSetFormat {
+    /// 预编译二进制（`.rrs`），默认值
+    #[default]
+    Binary,
+    /// 文本或 sing-box JSON Source Rule Set，启动时实时编译
+    Source,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleSetRef {
     /// 在 rules 中引用的名字
@@ -191,6 +211,12 @@ pub struct RuleSetRef {
 
     /// 来源类型：`"local"` 或 `"remote"`
     pub r#type: RuleSetType,
+
+    /// 规则集文件格式，与 sing-box `format` 字段对齐。
+    /// - `"binary"`（默认）：预编译的 `.rrs` 二进制
+    /// - `"source"`：sing-box JSON 或 Reflex 文本格式，运行时自动编译
+    #[serde(default)]
+    pub format: RuleSetFormat,
 
     /// 本地文件路径。
     /// - `type = "local"` 时**必填**，指定规则集文件位置。
@@ -207,6 +233,13 @@ pub struct RuleSetRef {
     /// 填写时通过该出站下载，无法下载则报错；不填则直连下载。
     #[serde(default)]
     pub download_detour: Option<String>,
+
+    /// 定时更新间隔（仅 `type = "remote"` 有效），与 sing-box `update_interval` 对齐。
+    ///
+    /// 格式同 provider 的 `update_interval`：`"1h"`、`"30m"`、`"1d"` 等。
+    /// 不填则不自动更新（只在启动时下载一次）。
+    #[serde(default)]
+    pub update_interval: Option<String>,
 }
 
 // ── 辅助类型 ──────────────────────────────────────────────────────────────────
@@ -315,6 +348,53 @@ mod tests {
         assert_eq!(route.rules.len(), 5);
         assert_eq!(route.r#final, "proxy");
         assert_eq!(route.rule_set.len(), 2);
+    }
+
+    #[test]
+    fn parse_ruleset_format_and_update_interval() {
+        let v = json!({
+            "rules": [],
+            "final": "direct",
+            "rule_set": [
+                // binary（默认，省略 format 字段）
+                {
+                    "tag": "geosite-cn",
+                    "type": "local",
+                    "path": "/tmp/geosite-cn.rrs"
+                },
+                // source 格式 + update_interval
+                {
+                    "tag": "geosite-ads",
+                    "type": "remote",
+                    "format": "source",
+                    "url": "https://example.com/geosite-ads.json",
+                    "path": "/tmp/geosite-ads.json",
+                    "update_interval": "24h"
+                },
+                // source 格式本地文件
+                {
+                    "tag": "custom-list",
+                    "type": "local",
+                    "format": "source",
+                    "path": "/etc/reflex/custom.txt"
+                }
+            ]
+        });
+        let route: RouteConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(route.rule_set.len(), 3);
+
+        // 默认 binary
+        assert_eq!(route.rule_set[0].format, RuleSetFormat::Binary);
+        assert!(route.rule_set[0].update_interval.is_none());
+
+        // source + update_interval
+        assert_eq!(route.rule_set[1].format, RuleSetFormat::Source);
+        assert_eq!(route.rule_set[1].update_interval.as_deref(), Some("24h"));
+        assert_eq!(route.rule_set[1].url.as_deref(), Some("https://example.com/geosite-ads.json"));
+
+        // source 本地
+        assert_eq!(route.rule_set[2].format, RuleSetFormat::Source);
+        assert_eq!(route.rule_set[2].r#type, RuleSetType::Local);
     }
 
     #[test]

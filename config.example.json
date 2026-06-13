@@ -501,17 +501,38 @@
 
     // 规则集文件声明
     "rule_set": [
+      // 本地 binary 格式（默认，预编译 .rrs 文件）
       {
         "tag": "geosite-cn",
-        "type": "local", "path": "/etc/rs-proxy/rules/geosite-cn.bin"
+        "type": "local",
+        "path": "/etc/reflex/rules/geosite-cn.rrs"
       },
+      // 本地 source 格式（sing-box JSON，运行时自动编译，无需预编译）
       {
         "tag": "geosite-ads",
-        "type": "local", "path": "/etc/rs-proxy/rules/geosite-ads.bin"
+        "type": "local",
+        "format": "source",
+        "path": "/etc/reflex/rules/geosite-ads.json"
       },
+      // 远程 binary 格式，每 24 小时自动更新
       {
         "tag": "geoip-cn",
-        "type": "local", "path": "/etc/rs-proxy/rules/geoip-cn.bin"
+        "type": "remote",
+        "format": "binary",
+        "url": "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip-cn.srs",
+        "path": "/var/cache/reflex/geoip-cn.rrs",
+        "download_detour": "direct",
+        "update_interval": "24h"
+      },
+      // 远程 source 格式（sing-box JSON），每 12 小时更新，通过代理下载
+      {
+        "tag": "geosite-geolocation-!cn",
+        "type": "remote",
+        "format": "source",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.json",
+        "path": "/var/cache/reflex/geosite-geolocation-not-cn.json",
+        "download_detour": "proxy",
+        "update_interval": "12h"
       }
     ]
   },

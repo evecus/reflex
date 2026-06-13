@@ -182,7 +182,7 @@ impl Router {
             .ok_or_else(|| anyhow::anyhow!("rule_set '{tag}' not found"))?
             .clone();
 
-        use crate::config::route::RuleSetType;
+        use crate::config::route::{RuleSetFormat, RuleSetType};
         if rs_ref.r#type != RuleSetType::Remote {
             anyhow::bail!("rule_set '{tag}' is not remote, cannot update");
         }
@@ -195,18 +195,33 @@ impl Router {
         // 强制从网络重新下载（忽略磁盘缓存）
         let data = download_bytes(url, tag)?;
 
-        // 覆盖磁盘缓存
-        if let Some(path) = &rs_ref.path {
-            if let Some(parent) = std::path::Path::new(path).parent() {
-                std::fs::create_dir_all(parent).ok();
+        let rs = if rs_ref.format == RuleSetFormat::Source {
+            // source 格式：编译后更新，缓存原始文本
+            let src = String::from_utf8(data).map_err(|e| {
+                anyhow::anyhow!("rule_set '{tag}': downloaded source is not UTF-8: {e}")
+            })?;
+            if let Some(path) = &rs_ref.path {
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                std::fs::write(path, src.as_bytes()).ok();
+                tracing::debug!(tag, path, "rule_set: refreshed source disk cache");
             }
-            std::fs::write(path, &data).ok();
-            tracing::debug!(tag, path, "rule_set: refreshed disk cache");
-        }
+            compile_source_to_ruleset(&src, tag)?
+        } else {
+            // binary 格式：覆盖磁盘缓存
+            if let Some(path) = &rs_ref.path {
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                std::fs::write(path, &data).ok();
+                tracing::debug!(tag, path, "rule_set: refreshed disk cache");
+            }
+            let loaded = crate::ruleset::LoadedRuleSet::from_bytes(&data)
+                .map_err(|e| anyhow::anyhow!("rule_set '{tag}': parse error: {e}"))?;
+            RuleSet::from_loaded(loaded)?
+        };
 
-        let loaded = crate::ruleset::LoadedRuleSet::from_bytes(&data)
-            .map_err(|e| anyhow::anyhow!("rule_set '{tag}': parse error: {e}"))?;
-        let rs = RuleSet::from_loaded(loaded)?;
         let rc = rs.rule_count();
         self.rulesets.insert(tag.to_string(), Arc::new(rs));
         self.ruleset_meta.insert(
@@ -635,7 +650,7 @@ fn load_ruleset_ref(
                     rs_ref.tag
                 )
             })?;
-            load_ruleset_from_path(path, &rs_ref.tag)
+            load_ruleset_from_path(path, &rs_ref.tag, &rs_ref.format)
         }
         RuleSetType::Remote => {
             let url = rs_ref.url.as_deref().ok_or_else(|| {
@@ -649,6 +664,7 @@ fn load_ruleset_ref(
                 rs_ref.path.as_deref(),
                 rs_ref.download_detour.as_deref(),
                 &rs_ref.tag,
+                &rs_ref.format,
                 cache_reader,
                 cache_writer,
             )
@@ -656,10 +672,50 @@ fn load_ruleset_ref(
     }
 }
 
-fn load_ruleset_from_path(path: &str, tag: &str) -> anyhow::Result<RuleSet> {
+/// 从本地文件加载规则集，支持 binary（.rrs）和 source（.json/.txt）格式。
+fn load_ruleset_from_path(
+    path: &str,
+    tag: &str,
+    format: &crate::config::route::RuleSetFormat,
+) -> anyhow::Result<RuleSet> {
+    use crate::config::route::RuleSetFormat;
     let data = std::fs::read(path)
         .map_err(|e| anyhow::anyhow!("rule_set '{tag}': failed to read file '{path}': {e}"))?;
-    let loaded = LoadedRuleSet::from_bytes(&data)?;
+    match format {
+        RuleSetFormat::Binary => {
+            let loaded = LoadedRuleSet::from_bytes(&data)?;
+            RuleSet::from_loaded(loaded)
+        }
+        RuleSetFormat::Source => {
+            let src = String::from_utf8(data).map_err(|e| {
+                anyhow::anyhow!("rule_set '{tag}': source file is not valid UTF-8: {e}")
+            })?;
+            compile_source_to_ruleset(&src, tag)
+        }
+    }
+}
+
+/// 将文本或 sing-box JSON Source Rule Set 编译为 RuleSet。
+/// 自动检测格式：以 `{` 开头视为 JSON，否则视为文本格式。
+fn compile_source_to_ruleset(src: &str, tag: &str) -> anyhow::Result<RuleSet> {
+    use crate::ruleset::compiler::CompiledRuleSet;
+    let trimmed = src.trim_start();
+    let compiled = if trimmed.starts_with('{') {
+        CompiledRuleSet::from_singbox_json(trimmed).map_err(|e| {
+            anyhow::anyhow!("rule_set '{tag}': failed to parse sing-box JSON source: {e}")
+        })?
+    } else {
+        CompiledRuleSet::from_text(trimmed).map_err(|e| {
+            anyhow::anyhow!("rule_set '{tag}': failed to parse text source: {e}")
+        })?
+    };
+    let mut buf = Vec::new();
+    compiled.serialize(&mut buf).map_err(|e| {
+        anyhow::anyhow!("rule_set '{tag}': failed to serialize compiled ruleset: {e}")
+    })?;
+    let loaded = LoadedRuleSet::from_bytes(&buf).map_err(|e| {
+        anyhow::anyhow!("rule_set '{tag}': internal compile error: {e}")
+    })?;
     Ok(RuleSet::from_loaded(loaded)?)
 }
 
@@ -673,19 +729,21 @@ fn load_ruleset_remote(
     cache_path: Option<&str>,
     download_detour: Option<&str>,
     tag: &str,
+    format: &crate::config::route::RuleSetFormat,
     cache_reader: Option<&CacheFileReader>,
     cache_writer: Option<&CacheFile>,
 ) -> anyhow::Result<RuleSet> {
+    use crate::config::route::RuleSetFormat;
     // ── 1. path 磁盘缓存 ──────────────────────────────────────────────────
     if let Some(path) = cache_path {
         if std::path::Path::new(path).exists() {
             tracing::debug!(tag, path, "rule_set: loading from disk cache (path)");
-            return load_ruleset_from_path(path, tag);
+            return load_ruleset_from_path(path, tag, format);
         }
     }
 
-    // ── 2. cache_file 持久化缓存 ──────────────────────────────────────────
-    if cache_path.is_none() {
+    // ── 2. cache_file 持久化缓存（仅 binary 格式；source 格式不缓存原始字节）──
+    if cache_path.is_none() && *format == RuleSetFormat::Binary {
         if let Some(reader) = cache_reader {
             if let Some(data) = reader.load_ruleset_cache(tag) {
                 tracing::debug!(tag, "rule_set: loading from cache_file (redb)");
@@ -708,6 +766,23 @@ fn load_ruleset_remote(
 
     let data = download_bytes(url, tag)?;
 
+    // source 格式：先编译，缓存原始 source 文本到磁盘（下次 load_ruleset_from_path 重新编译）
+    if *format == RuleSetFormat::Source {
+        let src = String::from_utf8(data).map_err(|e| {
+            anyhow::anyhow!("rule_set '{tag}': downloaded source is not valid UTF-8: {e}")
+        })?;
+        // 写磁盘缓存（存 source 文本）
+        if let Some(path) = cache_path {
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            std::fs::write(path, src.as_bytes()).ok();
+            tracing::debug!(tag, path, "rule_set: saved source to disk cache");
+        }
+        return compile_source_to_ruleset(&src, tag);
+    }
+
+    // binary 格式：写缓存
     if let Some(path) = cache_path {
         if let Some(parent) = std::path::Path::new(path).parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
