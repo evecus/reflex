@@ -86,9 +86,11 @@ async fn router_loads_ruleset_file() {
         rule_set: vec![RuleSetRef {
             tag: "foreign".into(),
             r#type: reflex::config::route::RuleSetType::Local,
+            format: reflex::config::route::RuleSetFormat::Binary,
             path: Some(rs_file.path().to_str().unwrap().into()),
             url: None,
             download_detour: None,
+            update_interval: None,
         }],
         resolve_dns: false,
     };
@@ -135,16 +137,20 @@ async fn router_multiple_rulesets_or_logic() {
             RuleSetRef {
                 tag: "cn-domain".into(),
                 r#type: reflex::config::route::RuleSetType::Local,
+                format: reflex::config::route::RuleSetFormat::Binary,
                 path: Some(cn_domain.path().to_str().unwrap().into()),
                 url: None,
                 download_detour: None,
+                update_interval: None,
             },
             RuleSetRef {
                 tag: "cn-ip".into(),
                 r#type: reflex::config::route::RuleSetType::Local,
+                format: reflex::config::route::RuleSetFormat::Binary,
                 path: Some(cn_ip.path().to_str().unwrap().into()),
                 url: None,
                 download_detour: None,
+                update_interval: None,
             },
         ],
         resolve_dns: false,
