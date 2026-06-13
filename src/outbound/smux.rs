@@ -78,7 +78,6 @@ const CMD_NOP: u8 = 0x03;
 const CMD_PSH: u8 = 0xFF;
 
 const HEADER_SIZE_V1: usize = 8;  // ver(1)+cmd(1)+len(2)+sid(4)
-const HEADER_SIZE_V2: usize = 12; // +consumed(4)
 
 const DEFAULT_MAX_FRAME: usize = 65535;
 const KEEPALIVE_INTERVAL_SECS: u64 = 10;
@@ -186,6 +185,7 @@ struct OpenRequest {
 /// SMux 会话，封装一条 TCP 连接，提供多路流功能。
 pub struct SmuxSession {
     open_tx: mpsc::Sender<OpenRequest>,
+    #[allow(dead_code)]
     closed: Arc<Notify>,
 }
 
@@ -220,6 +220,7 @@ impl SmuxSession {
 
 /// SMux 逻辑流，实现 AsyncRead + AsyncWrite。
 pub struct SmuxStream {
+    #[allow(dead_code)]
     stream_id: u32,
     data_rx: Option<mpsc::Receiver<Bytes>>,
     write_tx: mpsc::Sender<Bytes>,

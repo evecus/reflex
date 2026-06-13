@@ -59,14 +59,11 @@ use crate::{
 const MSG_INITIATION: u32 = 1;
 const MSG_RESPONSE: u32 = 2;
 const MSG_DATA: u32 = 4;
-const MSG_COOKIE_REPLY: u32 = 3;
 
 /// 握手超时
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// 会话超时（3 分钟，WG 规范为 180s）
 const SESSION_TIMEOUT: Duration = Duration::from_secs(180);
-/// Rekey 间隔（2 分钟）
-const REKEY_AFTER: Duration = Duration::from_secs(120);
 
 // ── Noise 协议常量 ────────────────────────────────────────────────────────────
 
@@ -159,17 +156,12 @@ fn aead_decrypt(key: &[u8; 32], counter: u64, cipher_text: &[u8], aad: &[u8]) ->
 // ── WireGuard 会话状态 ────────────────────────────────────────────────────────
 
 struct WgSession {
-    /// 发送密钥
     send_key: [u8; 32],
-    /// 接收密钥
     recv_key: [u8; 32],
-    /// 对端分配给我们的接收索引
     remote_idx: u32,
-    /// 我们的发送索引
+    #[allow(dead_code)]
     local_idx: u32,
-    /// 发包计数器
     send_counter: u64,
-    /// 会话建立时间
     established_at: Instant,
 }
 
@@ -177,13 +169,11 @@ impl WgSession {
     fn is_expired(&self) -> bool {
         self.established_at.elapsed() > SESSION_TIMEOUT
     }
-    fn needs_rekey(&self) -> bool {
-        self.established_at.elapsed() > REKEY_AFTER
-    }
 }
 
 // ── WireGuard 握手器 ──────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 struct WgHandshake {
     private_key: StaticSecret,
     public_key: PublicKey,
