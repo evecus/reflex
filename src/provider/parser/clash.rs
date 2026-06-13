@@ -12,7 +12,7 @@ use crate::config::outbound::{
     ShadowsocksOutboundConfig, SocksOutboundConfig, TlsConfig, TrojanOutboundConfig,
     TrojanTransportConfig, TuicOutboundConfig, VlessOutboundConfig, VlessTlsConfig,
     VlessTransportConfig, VmessOutboundConfig, VmessTransportConfig, WireGuardOutboundConfig,
-    WireGuardPeer, WsTransportConfig,
+    WsTransportConfig,
 };
 
 /// 解析 Clash YAML 文本，返回 (节点名, OutboundConfig) 列表。
