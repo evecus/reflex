@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// 顶层 experimental 配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ExperimentalConfig {
     #[serde(default)]
     pub cache_file: Option<CacheFileConfig>,
