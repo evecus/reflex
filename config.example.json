@@ -219,7 +219,13 @@
         "enabled": true,
         "server_name": "your.domain.com",
         "insecure": false,
-        "alpn": ["h2", "http/1.1"]
+        "alpn": ["h2", "http/1.1"],
+        // uTLS：启用浏览器 TLS 指纹伪造，与 sing-box utls 字段对齐
+        // fingerprint 可选值：chrome / firefox / safari / edge / ios / android / random / go
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
       }
     },
     //socks
@@ -293,7 +299,17 @@
       "server": "example.com",
       "server_port": 8388,
       "method": "aes-256-gcm",
-      "password": "your-password"
+      "password": "your-password",
+      // multiplex：多路复用，与 sing-box multiplex 字段对齐
+      // 减少握手次数，对高并发场景有帮助
+      "multiplex": {
+        "enabled": false,
+        "protocol": "smux",
+        "max_connections": 4,
+        "min_streams": 4,
+        "max_streams": 0,
+        "padding": false
+      }
     },
     // TUIC
     {
@@ -377,6 +393,37 @@
         "server_name": "your.domain.com",
         "insecure": false
       }
+    },
+    // WireGuard 出站（sing-box 标准格式，推荐）
+    {
+      "type": "wireguard",
+      "tag": "wg-out",
+      // 本机 WireGuard 接口地址，与 sing-box address 字段对齐
+      "address": ["10.0.0.2/32", "fd00::2/128"],
+      "private_key": "YOUR_PRIVATE_KEY_BASE64",
+      "peers": [
+        {
+          "address": "wg.example.com",
+          "port": 51820,
+          "public_key": "PEER_PUBLIC_KEY_BASE64",
+          // pre_shared_key 可选
+          "pre_shared_key": "",
+          "allowed_ips": ["0.0.0.0/0", "::/0"],
+          // Cloudflare WARP 需要填写 reserved，普通 WireGuard 留空
+          "reserved": []
+        }
+      ],
+      "mtu": 1408
+    },
+    // WireGuard 出站（简化格式，单对端时可用，与其他出站类型风格一致）
+    {
+      "type": "wireguard",
+      "tag": "wg-simple",
+      "server": "wg.example.com",
+      "server_port": 51820,
+      "local_address": ["10.0.0.2/32"],
+      "private_key": "YOUR_PRIVATE_KEY_BASE64",
+      "peer_public_key": "PEER_PUBLIC_KEY_BASE64"
     },
     // 直连
     {

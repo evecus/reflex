@@ -489,15 +489,21 @@ fn build_wireguard(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig>
 
     Ok(OutboundConfig::WireGuard(WireGuardOutboundConfig {
         tag,
-        server: p.server,
-        server_port: p.port,
-        local_address,
+        // sing-box 标准字段（从 Clash 格式的简化写法构建）
+        address: local_address.clone(),
         private_key,
-        peer_public_key,
-        pre_shared_key,
-        peers: Vec::new(),
+        peers: Vec::new(), // 通过简化字段 server/peer_public_key 构造，resolved_peers() 处理
         mtu,
         workers: 2,
+        udp_timeout: 0,
+        system: false,
+        name: None,
+        // Reflex 简化字段（Clash 格式兼容）
+        server: Some(p.server),
+        server_port: p.port,
+        local_address,
+        peer_public_key,
+        pre_shared_key,
         dns_servers,
         routing_mark: 0,
     }))

@@ -79,86 +79,171 @@ fn default_min_streams() -> usize { 4 }
 
 // ── WireGuard 出站配置 ────────────────────────────────────────────────────────
 
-/// WireGuard 对端配置
+/// WireGuard 对端配置，与 sing-box `WireGuardPeer` 字段完全对齐。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireGuardPeer {
-    /// 对端公钥（base64 编码）
-    pub public_key: String,
+    /// 对端服务器地址（域名或 IP），对应 sing-box `address`
+    #[serde(default)]
+    pub address: Option<String>,
 
-    /// 预共享密钥（可选，base64 编码）
+    /// 对端服务器端口，对应 sing-box `port`
+    #[serde(default)]
+    pub port: u16,
+
+    /// 对端公钥（base64），对应 sing-box `public_key`
+    #[serde(default)]
+    pub public_key: Option<String>,
+
+    /// 预共享密钥（可选，base64），对应 sing-box `pre_shared_key`
     #[serde(default)]
     pub pre_shared_key: Option<String>,
 
-    /// 对端服务器地址（域名或 IP）
-    pub server: String,
-
-    /// 对端服务器端口
-    pub server_port: u16,
-
-    /// 允许路由的 CIDR 列表（AllowedIPs），空 = 0.0.0.0/0 + ::/0
+    /// 允许路由的 CIDR 列表，对应 sing-box `allowed_ips`
     #[serde(default)]
     pub allowed_ips: Vec<String>,
+
+    /// 持久保活间隔（秒），对应 sing-box `persistent_keepalive_interval`
+    #[serde(default)]
+    pub persistent_keepalive_interval: u16,
+
+    /// Reserved 字节（3 字节，Cloudflare WARP 使用），对应 sing-box `reserved`
+    #[serde(default)]
+    pub reserved: Vec<u8>,
 }
 
-/// WireGuard 出站配置，与 sing-box `wireguard` 出站字段对齐。
+/// WireGuard 出站配置，与 sing-box `WireGuardEndpointOptions` 字段完全对齐。
 ///
+/// ## sing-box 标准格式（peers 数组）
+/// ```json
+/// {
+///   "type": "wireguard",
+///   "tag": "wg-out",
+///   "address": ["10.0.0.2/32", "fd00::2/128"],
+///   "private_key": "<base64>",
+///   "peers": [{
+///     "address": "wg.example.com",
+///     "port": 51820,
+///     "public_key": "<base64>",
+///     "pre_shared_key": "<base64>",
+///     "allowed_ips": ["0.0.0.0/0", "::/0"]
+///   }],
+///   "mtu": 1408
+/// }
+/// ```
+///
+/// ## 简化格式（单对端，与其他出站类型风格一致）
 /// ```json
 /// {
 ///   "type": "wireguard",
 ///   "tag": "wg-out",
 ///   "server": "wg.example.com",
 ///   "server_port": 51820,
-///   "local_address": ["10.0.0.2/32", "fd00::2/128"],
+///   "local_address": ["10.0.0.2/32"],
 ///   "private_key": "<base64>",
-///   "peer_public_key": "<base64>",
-///   "pre_shared_key": "<base64>",
-///   "mtu": 1420,
-///   "workers": 2
+///   "peer_public_key": "<base64>"
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireGuardOutboundConfig {
     pub tag: String,
 
-    /// WireGuard 服务端地址
-    pub server: String,
+    // ── sing-box 标准字段 ──────────────────────────────────────────────────
 
-    /// WireGuard 服务端端口
-    pub server_port: u16,
+    /// 本机 WireGuard 接口地址列表（含前缀长度），对应 sing-box `address`
+    /// 与 `local_address` 二选一，优先使用此字段
+    #[serde(default)]
+    pub address: Vec<String>,
 
-    /// 本机 WireGuard 接口地址列表（含前缀长度），如 `["10.0.0.2/32"]`
-    pub local_address: Vec<String>,
-
-    /// 本机私钥（base64）
+    /// 本机私钥（base64），对应 sing-box `private_key`
     pub private_key: String,
 
-    /// 对端公钥（base64）；与 peers 二选一，两者均填时 peers 优先
-    #[serde(default)]
-    pub peer_public_key: Option<String>,
-
-    /// 预共享密钥（base64，可选）
-    #[serde(default)]
-    pub pre_shared_key: Option<String>,
-
-    /// 多对端配置（高级用法）；不填则用 server/server_port/peer_public_key 构造单对端
+    /// 多对端配置，对应 sing-box `peers`
+    /// 填写后 `server`/`server_port`/`peer_public_key` 被忽略
     #[serde(default)]
     pub peers: Vec<WireGuardPeer>,
 
-    /// MTU，默认 1408
+    /// MTU，对应 sing-box `mtu`，默认 1408
     #[serde(default = "default_wg_mtu")]
     pub mtu: u32,
 
-    /// 工作线程数，默认 2
+    /// 工作线程数，对应 sing-box `workers`，默认 2
     #[serde(default = "default_wg_workers")]
     pub workers: usize,
 
-    /// DNS 服务器列表（用于 WireGuard 隧道内 DNS 解析），可为空
+    /// UDP 超时，对应 sing-box `udp_timeout`（秒），默认 0（不超时）
+    #[serde(default)]
+    pub udp_timeout: u64,
+
+    /// 使用系统内核 WireGuard（Linux `wg` 模块），对应 sing-box `system`
+    /// 默认 false（用户态实现）
+    #[serde(default)]
+    pub system: bool,
+
+    /// TUN 接口名称，对应 sing-box `name`，留空自动分配
+    #[serde(default)]
+    pub name: Option<String>,
+
+    // ── Reflex 扩展（简化单对端写法，兼容其他出站类型风格）────────────────
+
+    /// 服务端地址（简化写法，等价于 `peers[0].address`）
+    #[serde(default)]
+    pub server: Option<String>,
+
+    /// 服务端端口（简化写法，等价于 `peers[0].port`）
+    #[serde(default)]
+    pub server_port: u16,
+
+    /// 本机接口地址（简化写法，等价于 `address`，历史兼容）
+    #[serde(default)]
+    pub local_address: Vec<String>,
+
+    /// 对端公钥（简化写法，等价于 `peers[0].public_key`）
+    #[serde(default)]
+    pub peer_public_key: Option<String>,
+
+    /// 预共享密钥（简化写法，等价于 `peers[0].pre_shared_key`）
+    #[serde(default)]
+    pub pre_shared_key: Option<String>,
+
+    /// DNS 服务器列表（隧道内解析用）
     #[serde(default)]
     pub dns_servers: Vec<String>,
 
-    /// 全局 SO_MARK（Linux，通过 global.routing_mark 自动传入，不需手动配置）
+    /// 全局 SO_MARK（Linux，通过 global.routing_mark 自动传入）
     #[serde(skip)]
     pub routing_mark: u32,
+}
+
+impl WireGuardOutboundConfig {
+    /// 解析出规范化的本机地址列表（优先 `address`，fallback `local_address`）
+    pub fn local_addresses(&self) -> &[String] {
+        if !self.address.is_empty() {
+            &self.address
+        } else {
+            &self.local_address
+        }
+    }
+
+    /// 解析出规范化的 peers 列表（优先 `peers`，fallback 简化字段）
+    pub fn resolved_peers(&self) -> Vec<WireGuardPeer> {
+        if !self.peers.is_empty() {
+            return self.peers.clone();
+        }
+        // 从简化字段构造单 peer
+        if self.server.is_some() || self.peer_public_key.is_some() {
+            vec![WireGuardPeer {
+                address: self.server.clone(),
+                port: self.server_port,
+                public_key: self.peer_public_key.clone(),
+                pre_shared_key: self.pre_shared_key.clone(),
+                allowed_ips: vec!["0.0.0.0/0".into(), "::/0".into()],
+                persistent_keepalive_interval: 0,
+                reserved: vec![],
+            }]
+        } else {
+            vec![]
+        }
+    }
 }
 
 fn default_wg_mtu() -> u32 { 1408 }

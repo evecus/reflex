@@ -347,8 +347,11 @@ impl WireGuardOutbound {
         // 验证私钥格式
         decode_key_base64(&config.private_key)
             .context("WireGuard: invalid private_key")?;
-        if let Some(pk) = &config.peer_public_key {
-            decode_key_base64(pk).context("WireGuard: invalid peer_public_key")?;
+        // 验证 peers 里的公钥格式
+        for peer in config.resolved_peers() {
+            if let Some(pk) = &peer.public_key {
+                decode_key_base64(pk).context("WireGuard: invalid peer public_key")?;
+            }
         }
         Ok(Self {
             config,
@@ -363,10 +366,17 @@ impl WireGuardOutbound {
         self
     }
 
-    /// 解析服务端地址
+    /// 解析服务端地址（从 peers 或简化字段）
     async fn resolve_server(&self) -> anyhow::Result<SocketAddr> {
-        let host = &self.config.server;
-        let port = self.config.server_port;
+        let peers = self.config.resolved_peers();
+        let peer = peers.first()
+            .ok_or_else(|| anyhow!("WireGuard: no peer configured"))?;
+        let host = peer.address.as_deref()
+            .ok_or_else(|| anyhow!("WireGuard: peer has no address"))?;
+        let port = peer.port;
+        if port == 0 {
+            return Err(anyhow!("WireGuard: peer port is 0"));
+        }
         if let Ok(ip) = host.parse::<IpAddr>() {
             return Ok(SocketAddr::new(ip, port));
         }
@@ -375,7 +385,6 @@ impl WireGuardOutbound {
                 .context("WireGuard: DNS resolve failed")?;
             return Ok(SocketAddr::new(ip, port));
         }
-        // 系统 DNS fallback
         use tokio::net::lookup_host;
         let mut addrs = lookup_host(format!("{host}:{port}")).await?;
         addrs.next().ok_or_else(|| anyhow!("WireGuard: no address for {host}"))
@@ -395,13 +404,14 @@ impl WireGuardOutbound {
         }
 
         let private_bytes = decode_key_base64(&self.config.private_key)?;
-        let peer_pub_bytes = match &self.config.peer_public_key {
+        let peers = self.config.resolved_peers();
+        let peer = peers.first()
+            .ok_or_else(|| anyhow!("WireGuard: no peer configured"))?;
+        let peer_pub_bytes = match &peer.public_key {
             Some(k) => decode_key_base64(k)?,
-            None => {
-                return Err(anyhow!("WireGuard: peer_public_key is required"));
-            }
+            None => return Err(anyhow!("WireGuard: peer has no public_key")),
         };
-        let psk = match &self.config.pre_shared_key {
+        let psk = match &peer.pre_shared_key {
             Some(k) => Some(decode_key_base64(k)?),
             None => None,
         };
