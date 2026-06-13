@@ -424,7 +424,7 @@ pin_project_lite::pin_project! {
     pub struct UtlsStream {
         #[pin]
         inner: TcpStream,
-        /// 替换用的伪造 ClientHello；`None` 表示已发送过
+        // 替换用的伪造 ClientHello；None 表示已发送过
         fake_hello: Option<Vec<u8>>,
     }
 }
