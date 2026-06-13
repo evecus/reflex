@@ -150,7 +150,7 @@ impl Frame {
     }
 }
 
-async fn read_frame<R: AsyncRead + Unpin>(r: &mut R, version: u8) -> io::Result<Frame> {
+async fn read_frame<R: AsyncRead + Unpin>(r: &mut R, _version: u8) -> io::Result<Frame> {
     let mut hdr = [0u8; HEADER_SIZE_V1];
     r.read_exact(&mut hdr).await?;
 

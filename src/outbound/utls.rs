@@ -417,9 +417,9 @@ fn grease_value() -> u16 {
 
 // ── UtlsStream ────────────────────────────────────────────────────────────────
 
-/// TCP 流包装器，拦截 rustls 的第一次 write（ClientHello），
-/// 替换为浏览器伪造的 ClientHello TLS Record。
-/// 后续所有 I/O 正常透传。
+// TCP 流包装器，拦截 rustls 的第一次 write（ClientHello），
+// 替换为浏览器伪造的 ClientHello TLS Record。
+// 后续所有 I/O 正常透传。
 pin_project_lite::pin_project! {
     pub struct UtlsStream {
         #[pin]

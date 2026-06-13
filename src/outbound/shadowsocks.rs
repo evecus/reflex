@@ -667,7 +667,6 @@ impl ShadowsocksOutbound {
             let mux_cfg = config.multiplex.clone().unwrap_or_default();
             let server = config.server.clone();
             let port = config.server_port;
-            let mark = 0u32; // will be updated via with_mark; pool is re-created there if needed
             let pool = crate::outbound::smux::MultiplexPool::new(mux_cfg, move || {
                 let server = server.clone();
                 async move {

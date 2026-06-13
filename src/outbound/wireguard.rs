@@ -37,7 +37,6 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
-use bytes::{BufMut, Bytes, BytesMut};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce,
@@ -45,7 +44,7 @@ use chacha20poly1305::{
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use tokio::{net::UdpSocket, sync::Mutex, time};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 
 use crate::{
@@ -108,8 +107,9 @@ fn hash(data: &[u8]) -> [u8; 32] {
 
 fn hmac_hash(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
     use hmac::{Hmac, Mac};
+    use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC key size error");
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC key size error");
     mac.update(data);
     let r = mac.finalize().into_bytes();
     let mut out = [0u8; 32];
@@ -198,13 +198,11 @@ impl WgHandshake {
         let private_key = StaticSecret::from(private_bytes);
         let public_key = PublicKey::from(&private_key);
         let initial_hash = hash(NOISE_CONSTRUCTION);
-        let chaining_key = initial_hash;
-        let mut h = hash(&{
+        let h = hash(&{
             let mut d = initial_hash.to_vec();
             d.extend_from_slice(WG_IDENTIFIER);
             d
         });
-        // hash ← H(H, responder_static_public)
         let hash_val = hash(&{
             let mut d = h.to_vec();
             d.extend_from_slice(&peer_pub);
@@ -234,7 +232,7 @@ impl WgHandshake {
             d.extend_from_slice(WG_IDENTIFIER);
             d
         });
-        let mut h = hash(&{
+        let h = hash(&{
             let mut d = h0.to_vec();
             d.extend_from_slice(&self.peer_pub);
             d
@@ -277,8 +275,8 @@ impl WgHandshake {
 
         // PSK if present (simplified: skip for now, psk = zero)
         let psk_bytes = self.psk.unwrap_or([0u8; 32]);
-        let (ck, tau, key) = hkdf3(&ck, &psk_bytes);
-        let h = hash(&{
+        let (ck, tau, _key) = hkdf3(&ck, &psk_bytes);
+        let _h = hash(&{
             let mut d = h.to_vec();
             d.extend_from_slice(&tau);
             d
@@ -520,12 +518,9 @@ impl Outbound for WireGuardOutbound {
     async fn handle_tcp(
         &self,
         conn: InboundTcpStream,
-    ) -> anyhow::Result<()> {
-        use tokio::io::AsyncWriteExt;
-
+    ) -> anyhow::Result<(u64, u64)> {
         let server_addr = self.resolve_server().await?;
 
-        // 建立 UDP socket
         let bind_addr: SocketAddr = if server_addr.is_ipv6() {
             "[::]:0".parse().unwrap()
         } else {
@@ -542,23 +537,13 @@ impl Outbound for WireGuardOutbound {
         udp.connect(server_addr).await
             .context("WireGuard: UDP connect failed")?;
 
-        // WireGuard 握手
         self.ensure_session(&udp, server_addr).await?;
 
-        // 将 TCP 流量包装为 IP 包通过 WG 隧道发送
-        // 简化实现：使用 IP-in-WG-UDP 的方式转发
-        // 完整实现需要 TUN 虚拟网卡；这里提供可编译的框架骨架
         warn!(
             tag = %self.config.tag,
             target = %conn.target,
-            "WireGuard: TCP-over-WG requires TUN stack; using direct relay placeholder"
+            "WireGuard: TCP-over-WG requires TUN stack; not yet implemented"
         );
-
-        // TODO: 完整实现需要：
-        // 1. 建立 TUN 设备（复用 inbound/tun.rs 的逻辑）
-        // 2. 将 conn.tcp_stream 的数据打包为 IPv4/IPv6 TCP segment
-        // 3. 再封装为 IP 包，通过 WG 加密后 UDP 发出
-        // 4. 从 WG UDP 收到 IP 包后解封装，送回 conn.tcp_stream
 
         Err(anyhow!(
             "WireGuard TCP-over-tunnel not yet fully implemented; \
@@ -568,7 +553,7 @@ impl Outbound for WireGuardOutbound {
 
     async fn handle_udp(
         &self,
-        mut pkt: InboundUdpPacket,
+        pkt: InboundUdpPacket,
     ) -> anyhow::Result<()> {
         let server_addr = self.resolve_server().await?;
 
