@@ -219,7 +219,8 @@ impl Router {
             }
             let loaded = crate::ruleset::LoadedRuleSet::from_bytes(&data)
                 .map_err(|e| anyhow::anyhow!("rule_set '{tag}': parse error: {e}"))?;
-            RuleSet::from_loaded(loaded)?
+            RuleSet::from_loaded(loaded)
+                .map_err(|e| anyhow::anyhow!("rule_set '{tag}': load error: {e}"))?
         };
 
         let rc = rs.rule_count();
