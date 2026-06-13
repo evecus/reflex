@@ -684,7 +684,7 @@ fn load_ruleset_from_path(
     match format {
         RuleSetFormat::Binary => {
             let loaded = LoadedRuleSet::from_bytes(&data)?;
-            RuleSet::from_loaded(loaded)
+            Ok(RuleSet::from_loaded(loaded)?)
         }
         RuleSetFormat::Source => {
             let src = String::from_utf8(data).map_err(|e| {
