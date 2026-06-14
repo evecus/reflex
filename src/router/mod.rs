@@ -284,7 +284,7 @@ impl Router {
             Some(NetworkKind::Tcp),
             &conn.target,
             conn.sniffed_protocol.as_deref(),
-            conn.src_addr.map(|a| a.ip()),
+            conn.stream.peer_addr().ok().map(|a| a.ip()),
         )
     }
 
@@ -299,7 +299,7 @@ impl Router {
             Some(NetworkKind::Tcp),
             target,
             conn.sniffed_protocol.as_deref(),
-            conn.src_addr.map(|a| a.ip()),
+            conn.stream.peer_addr().ok().map(|a| a.ip()),
             "post-sniff",
         )
     }
@@ -315,7 +315,7 @@ impl Router {
             Some(NetworkKind::Tcp),
             target,
             conn.sniffed_protocol.as_deref(),
-            conn.src_addr.map(|a| a.ip()),
+            conn.stream.peer_addr().ok().map(|a| a.ip()),
             "post-resolve",
         )
     }
@@ -331,7 +331,7 @@ impl Router {
             Some(NetworkKind::Udp),
             target,
             packet.sniffed_protocol.as_deref(),
-            packet.src_addr.map(|a| a.ip()),
+            Some(packet.src.ip()),
             "post-resolve",
         )
     }
@@ -345,7 +345,7 @@ impl Router {
             Some(NetworkKind::Udp),
             &packet.target,
             packet.sniffed_protocol.as_deref(),
-            packet.src_addr.map(|a| a.ip()),
+            Some(packet.src.ip()),
             "post-sniff(udp)",
         )
     }
@@ -356,7 +356,7 @@ impl Router {
             Some(NetworkKind::Udp),
             &packet.target,
             packet.sniffed_protocol.as_deref(),
-            packet.src_addr.map(|a| a.ip()),
+            Some(packet.src.ip()),
         )
     }
 
