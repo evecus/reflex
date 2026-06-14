@@ -38,6 +38,7 @@ fn empty_rule(outbound: &str) -> RouteRuleConfig {
         resolve_server: None,
         private_ip: false,
         hijack_dns: false,
+        ..Default::default()
     }
 }
 
@@ -93,6 +94,9 @@ async fn router_loads_ruleset_file() {
             update_interval: None,
         }],
         resolve_dns: false,
+        auto_detect_interface: false,
+        default_interface: None,
+        default_mark: None,
     };
 
     let router = Router::from_config(&config, None, None).unwrap();
@@ -154,6 +158,9 @@ async fn router_multiple_rulesets_or_logic() {
             },
         ],
         resolve_dns: false,
+        auto_detect_interface: false,
+        default_interface: None,
+        default_mark: None,
     };
     let router = Router::from_config(&config, None, None).unwrap();
 
@@ -188,6 +195,9 @@ async fn router_dns_out_routing() {
         r#final: "proxy".into(),
         rule_set: vec![],
         resolve_dns: false,
+        auto_detect_interface: false,
+        default_interface: None,
+        default_mark: None,
     };
     let router = Router::from_config(&config, None, None).unwrap();
 
@@ -217,6 +227,9 @@ async fn router_network_filter_separates_tcp_udp() {
         r#final: "proxy".into(),
         rule_set: vec![],
         resolve_dns: false,
+        auto_detect_interface: false,
+        default_interface: None,
+        default_mark: None,
     };
     let router = Router::from_config(&config, None, None).unwrap();
 
@@ -247,6 +260,9 @@ async fn router_private_ip_direct() {
         r#final: "proxy".into(),
         rule_set: vec![],
         resolve_dns: false,
+        auto_detect_interface: false,
+        default_interface: None,
+        default_mark: None,
     };
     let router = Router::from_config(&config, None, None).unwrap();
 
@@ -276,6 +292,9 @@ async fn router_port_range_rule() {
         r#final: "proxy".into(),
         rule_set: vec![],
         resolve_dns: false,
+        auto_detect_interface: false,
+        default_interface: None,
+        default_mark: None,
     };
     let router = Router::from_config(&config, None, None).unwrap();
 
