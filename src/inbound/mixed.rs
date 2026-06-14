@@ -38,7 +38,7 @@ impl MixedInbound {
 
     pub async fn run(self) -> anyhow::Result<()> {
         let bind: SocketAddr =
-            format!("{}:{}", self.config.listen, self.config.listen_port).parse()?;
+            crate::inbound::parse_listen_addr(&self.config.listen, self.config.listen_port)?;
         let tag = Arc::new(self.config.tag.clone());
         let config = Arc::new(self.config);
 

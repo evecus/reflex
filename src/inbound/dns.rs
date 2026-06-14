@@ -47,7 +47,7 @@ impl DnsInbound {
 
     pub async fn run(self) -> anyhow::Result<()> {
         let bind: SocketAddr =
-            format!("{}:{}", self.config.listen, self.config.listen_port).parse()?;
+            crate::inbound::parse_listen_addr(&self.config.listen, self.config.listen_port)?;
         let net = self.config.network;
         let tag = Arc::new(self.config.tag.clone());
 

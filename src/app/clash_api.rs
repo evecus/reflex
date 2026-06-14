@@ -338,8 +338,10 @@ impl ClashApi {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        let listener = TcpListener::bind(&self.config.external_controller).await?;
-        info!(listen=%self.config.external_controller, "clash api listening");
+        let bind_addr = crate::inbound::parse_controller_addr(&self.config.external_controller)
+            .map_err(|e| anyhow::anyhow!("clash_api external_controller: {e}"))?;
+        let listener = TcpListener::bind(bind_addr).await?;
+        info!(listen=%self.config.external_controller, addr=%bind_addr, "clash api listening");
 
         let shared = Arc::new(self);
         loop {
