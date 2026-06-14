@@ -1986,7 +1986,7 @@ fn extract_zip(data: &[u8], output_dir: &str) -> anyhow::Result<()> {
 
     for (fname, content) in entries {
         let rel = if trim_prefix {
-            fname.splitn(2, '/').nth(1).unwrap_or(&fname).to_string()
+            fname.split_once('/').map(|x| x.1).unwrap_or(&fname).to_string()
         } else {
             fname.clone()
         };
