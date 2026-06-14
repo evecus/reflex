@@ -528,8 +528,10 @@ impl CompiledRule {
             }
         } else if rule.hijack_dns {
             RouteAction::DnsOut
-        } else if rule.private_ip {
+        } else if rule.private_ip && !rule.invert {
             // private_ip=true 时动作固定为直连，忽略 outbound 字段
+            // 注意：invert=true 时语义被反转（"非私有 IP"才命中），
+            // 此时不应强制走 direct，而应使用规则自身的 outbound 字段。
             RouteAction::Outbound("direct".to_string())
         } else {
             to_action(&rule.outbound)
