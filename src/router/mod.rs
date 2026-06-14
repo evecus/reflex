@@ -380,6 +380,7 @@ impl Router {
     }
 
     /// 按预计算索引遍历（跳过特定 action 规则，零分支判断）
+    #[allow(clippy::too_many_arguments)]
     fn route_indexed(
         &self,
         indices: &[usize],
