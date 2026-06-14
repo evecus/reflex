@@ -52,7 +52,8 @@ pub fn parse_listen_addr(listen: &str, port: u16) -> anyhow::Result<SocketAddr> 
         // IPv4 地址或已含方括号的 IPv6（如 "[::1]"）
         format!("{listen}:{port}")
     };
-    addr_str.parse::<SocketAddr>()
+    addr_str
+        .parse::<SocketAddr>()
         .map_err(|e| anyhow::anyhow!("invalid listen address '{listen}:{port}': {e}"))
 }
 
@@ -82,7 +83,7 @@ pub fn parse_controller_addr(addr: &str) -> anyhow::Result<SocketAddr> {
     // ":::PORT" 或 "HOST:PORT" 中 HOST 是裸 IPv6 的情况
     // 找最后一个 ':' 分割 host 和 port
     if let Some(colon_pos) = addr.rfind(':') {
-        let (host, port_str) = (&addr[..colon_pos], &addr[colon_pos+1..]);
+        let (host, port_str) = (&addr[..colon_pos], &addr[colon_pos + 1..]);
         if let Ok(port) = port_str.parse::<u16>() {
             // host 是裸 IPv6（含有 ':'）且没有方括号
             let normalized = if host.contains(':') && !host.starts_with('[') {
@@ -96,7 +97,9 @@ pub fn parse_controller_addr(addr: &str) -> anyhow::Result<SocketAddr> {
         }
     }
 
-    Err(anyhow::anyhow!("invalid address '{addr}': expected HOST:PORT, [IPv6]:PORT, or :PORT"))
+    Err(anyhow::anyhow!(
+        "invalid address '{addr}': expected HOST:PORT, [IPv6]:PORT, or :PORT"
+    ))
 }
 
 // ── 共享抽象 ──────────────────────────────────────────────────────────────────

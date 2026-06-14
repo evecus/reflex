@@ -375,7 +375,10 @@ impl DnsResolver {
     pub async fn resolve_raw(&self, name: &str, qtype: u16) -> anyhow::Result<Vec<u8>> {
         let query = build_query_bytes(name, qtype);
         // 用 default upstream 直接查询（不走路由规则，不影响 fake-ip 分配）
-        let resp = self.default.query(bytes::Bytes::from(query)).await
+        let resp = self
+            .default
+            .query(bytes::Bytes::from(query))
+            .await
             .map_err(|e| anyhow::anyhow!("dns query failed: {e}"))?;
         Ok(resp.to_vec())
     }

@@ -706,17 +706,15 @@ fn compile_source_to_ruleset(src: &str, tag: &str) -> anyhow::Result<RuleSet> {
             anyhow::anyhow!("rule_set '{tag}': failed to parse sing-box JSON source: {e}")
         })?
     } else {
-        CompiledRuleSet::from_text(trimmed).map_err(|e| {
-            anyhow::anyhow!("rule_set '{tag}': failed to parse text source: {e}")
-        })?
+        CompiledRuleSet::from_text(trimmed)
+            .map_err(|e| anyhow::anyhow!("rule_set '{tag}': failed to parse text source: {e}"))?
     };
     let mut buf = Vec::new();
     compiled.serialize(&mut buf).map_err(|e| {
         anyhow::anyhow!("rule_set '{tag}': failed to serialize compiled ruleset: {e}")
     })?;
-    let loaded = LoadedRuleSet::from_bytes(&buf).map_err(|e| {
-        anyhow::anyhow!("rule_set '{tag}': internal compile error: {e}")
-    })?;
+    let loaded = LoadedRuleSet::from_bytes(&buf)
+        .map_err(|e| anyhow::anyhow!("rule_set '{tag}': internal compile error: {e}"))?;
     Ok(RuleSet::from_loaded(loaded)?)
 }
 

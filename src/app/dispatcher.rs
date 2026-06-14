@@ -222,9 +222,10 @@ impl Dispatcher {
                 // 若 override_destination=false，conn.target 仍是原始 IP，但路由决策
                 // 应优先使用嗅探到的域名，否则域名规则集（如 cn.rrs）无法命中。
                 {
-                    let sniff_target = conn.sniffed_domain.as_ref().map(|d| {
-                        crate::inbound::Target::Domain(d.clone(), conn.target.port())
-                    });
+                    let sniff_target = conn
+                        .sniffed_domain
+                        .as_ref()
+                        .map(|d| crate::inbound::Target::Domain(d.clone(), conn.target.port()));
                     let route_target = sniff_target.as_ref().unwrap_or(&conn.target);
                     let (a, rt, rp) = self.router.route_tcp_after_sniff(&conn, route_target);
                     rule_info = RuleInfo {

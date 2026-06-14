@@ -59,11 +59,7 @@ pub fn build_client_config(tls: &TlsConfig) -> anyhow::Result<Arc<ClientConfig>>
 
     // ALPN 配置
     if !tls.alpn.is_empty() {
-        config.alpn_protocols = tls
-            .alpn
-            .iter()
-            .map(|p| p.as_bytes().to_vec())
-            .collect();
+        config.alpn_protocols = tls.alpn.iter().map(|p| p.as_bytes().to_vec()).collect();
     }
 
     Ok(Arc::new(config))
@@ -157,20 +153,14 @@ impl AsyncWrite for TlsStreamBox {
         }
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             TlsStreamBox::Plain(s) => Pin::new(s).poll_flush(cx),
             TlsStreamBox::Utls(s) => Pin::new(s.as_mut()).poll_flush(cx),
         }
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             TlsStreamBox::Plain(s) => Pin::new(s).poll_shutdown(cx),
             TlsStreamBox::Utls(s) => Pin::new(s.as_mut()).poll_shutdown(cx),

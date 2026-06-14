@@ -115,9 +115,8 @@ impl VmessOutbound {
                 .server_name
                 .as_deref()
                 .unwrap_or(server.as_str());
-            let stream = crate::outbound::tls::connect_tls_or_utls(
-                tcp, sni, &self.config.tls,
-            ).await?;
+            let stream =
+                crate::outbound::tls::connect_tls_or_utls(tcp, sni, &self.config.tls).await?;
             Ok(Box::new(stream))
         } else {
             Ok(Box::new(tcp))

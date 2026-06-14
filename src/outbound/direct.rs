@@ -81,11 +81,23 @@ impl DirectOutbound {
             socket.bind(bind_addr)?;
             tokio::time::timeout(connect_timeout, socket.connect(addr))
                 .await
-                .map_err(|_| anyhow::anyhow!("direct tcp connect timeout ({}s) to {}", Self::TCP_CONNECT_TIMEOUT_SECS, addr))??
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "direct tcp connect timeout ({}s) to {}",
+                        Self::TCP_CONNECT_TIMEOUT_SECS,
+                        addr
+                    )
+                })??
         } else {
             tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
                 .await
-                .map_err(|_| anyhow::anyhow!("direct tcp connect timeout ({}s) to {}", Self::TCP_CONNECT_TIMEOUT_SECS, addr))??
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "direct tcp connect timeout ({}s) to {}",
+                        Self::TCP_CONNECT_TIMEOUT_SECS,
+                        addr
+                    )
+                })??
         };
         set_tcp_opts(&stream)?;
         apply_mark_to_tcp(&stream, self.routing_mark)?;

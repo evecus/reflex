@@ -1629,7 +1629,9 @@ mod tests {
     #[test]
     fn fakeip_reverse_lookup() {
         let store = new_store_v4();
-        let resp = store.reply(&make_fakeip_query("lookup.example.com", 1)).unwrap();
+        let resp = store
+            .reply(&make_fakeip_query("lookup.example.com", 1))
+            .unwrap();
         let ip_bytes: [u8; 4] = resp[resp.len() - 4..].try_into().unwrap();
         let ip = std::net::IpAddr::V4(Ipv4Addr::from(ip_bytes));
         assert!(store.contains(ip));
@@ -1643,13 +1645,18 @@ mod tests {
         let result = store.reply(&make_fakeip_query("txt.example.com", 16));
         assert!(result.is_err(), "expected Err for non-A/AAAA qtype, got Ok");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("only A/AAAA"), "unexpected error message: {msg}");
+        assert!(
+            msg.contains("only A/AAAA"),
+            "unexpected error message: {msg}"
+        );
     }
 
     #[test]
     fn fakeip_aaaa_no_inet6() {
         let store = new_store_v4();
-        let resp = store.reply(&make_fakeip_query("v6.example.com", 28)).unwrap();
+        let resp = store
+            .reply(&make_fakeip_query("v6.example.com", 28))
+            .unwrap();
         assert_eq!(resp[3] & 0x0F, 0);
         assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 0);
     }
@@ -1663,7 +1670,9 @@ mod tests {
             exclude_domain_suffix: vec![],
         })
         .unwrap();
-        let resp = store.reply(&make_fakeip_query("v6only.example.com", 28)).unwrap();
+        let resp = store
+            .reply(&make_fakeip_query("v6only.example.com", 28))
+            .unwrap();
         assert_eq!(resp[3] & 0x0F, 0);
         assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 1);
         let ip_bytes: [u8; 16] = resp[resp.len() - 16..].try_into().unwrap();

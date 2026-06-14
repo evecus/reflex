@@ -10,7 +10,10 @@
 //! 高并发下读锁升级写锁有额外开销。DashMap 内置分片锁（默认 16 片），
 //! 并发写性能比全局 RwLock 好一个数量级。
 
-use std::{collections::HashMap, sync::{atomic::Ordering, Arc}};
+use std::{
+    collections::HashMap,
+    sync::{atomic::Ordering, Arc},
+};
 
 use dashmap::DashMap;
 

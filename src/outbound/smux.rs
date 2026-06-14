@@ -77,7 +77,7 @@ const CMD_RST: u8 = 0x02;
 const CMD_NOP: u8 = 0x03;
 const CMD_PSH: u8 = 0xFF;
 
-const HEADER_SIZE_V1: usize = 8;  // ver(1)+cmd(1)+len(2)+sid(4)
+const HEADER_SIZE_V1: usize = 8; // ver(1)+cmd(1)+len(2)+sid(4)
 
 const DEFAULT_MAX_FRAME: usize = 65535;
 const KEEPALIVE_INTERVAL_SECS: u64 = 10;
@@ -134,7 +134,11 @@ struct Frame {
 
 impl Frame {
     fn encode(&self) -> Bytes {
-        let extra = if self.version == SMUX_V2 && self.cmd == CMD_PSH { 4 } else { 0 };
+        let extra = if self.version == SMUX_V2 && self.cmd == CMD_PSH {
+            4
+        } else {
+            0
+        };
         let total = HEADER_SIZE_V1 + extra + self.data.len();
         let mut buf = BytesMut::with_capacity(total);
         buf.put_u8(self.version);
@@ -171,7 +175,13 @@ async fn read_frame<R: AsyncRead + Unpin>(r: &mut R, _version: u8) -> io::Result
     if payload_len > 0 {
         r.read_exact(&mut data).await?;
     }
-    Ok(Frame { version: ver, cmd, stream_id, data: Bytes::from(data), consumed })
+    Ok(Frame {
+        version: ver,
+        cmd,
+        stream_id,
+        data: Bytes::from(data),
+        consumed,
+    })
 }
 
 // ── 会话 ──────────────────────────────────────────────────────────────────────
@@ -209,9 +219,12 @@ impl SmuxSession {
     /// 打开一条新的逻辑流。
     pub async fn open_stream(&self) -> anyhow::Result<SmuxStream> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.open_tx.send(OpenRequest { reply: reply_tx }).await
+        self.open_tx
+            .send(OpenRequest { reply: reply_tx })
+            .await
             .map_err(|_| anyhow::anyhow!("smux session closed"))?;
-        reply_rx.await
+        reply_rx
+            .await
             .map_err(|_| anyhow::anyhow!("smux session loop dropped"))?
     }
 }
@@ -271,9 +284,10 @@ impl AsyncWrite for SmuxStream {
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "smux stream closed")))
-            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "smux stream closed",
+            ))),
         }
     }
 
@@ -309,8 +323,7 @@ where
     let version = cfg.version;
 
     // 流表：stream_id → state
-    let streams: Arc<Mutex<HashMap<u32, StreamState>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let streams: Arc<Mutex<HashMap<u32, StreamState>>> = Arc::new(Mutex::new(HashMap::new()));
     let next_id = Arc::new(AtomicU32::new(1)); // 客户端使用奇数 stream_id
 
     // ── 读循环 ────────────────────────────────────────────────────────────────
@@ -319,7 +332,12 @@ where
         loop {
             match read_frame(&mut reader, version).await {
                 Ok(frame) => {
-                    trace!("smux rx: cmd={} sid={} len={}", frame.cmd, frame.stream_id, frame.data.len());
+                    trace!(
+                        "smux rx: cmd={} sid={} len={}",
+                        frame.cmd,
+                        frame.stream_id,
+                        frame.data.len()
+                    );
                     let mut map = streams_r.lock().await;
                     match frame.cmd {
                         CMD_PSH => {
@@ -454,7 +472,15 @@ pub struct MultiplexPool {
     /// (session, 当前流计数)
     sessions: Mutex<Vec<(Arc<SmuxSession>, usize)>>,
     /// 建立新物理连接的工厂函数
-    dial: Box<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Box<dyn AsyncReadWrite>>> + Send>> + Send + Sync>,
+    dial: Box<
+        dyn Fn() -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = anyhow::Result<Box<dyn AsyncReadWrite>>>
+                        + Send,
+                >,
+            > + Send
+            + Sync,
+    >,
 }
 
 /// 辅助 trait，合并 AsyncRead + AsyncWrite + Send + Unpin
@@ -476,8 +502,16 @@ impl MultiplexPool {
 
     /// 获取或创建一个 SMux 流。
     pub async fn acquire(&self) -> anyhow::Result<SmuxStream> {
-        let max_streams = if self.cfg.max_streams == 0 { usize::MAX } else { self.cfg.max_streams };
-        let max_conns = if self.cfg.max_connections == 0 { usize::MAX } else { self.cfg.max_connections };
+        let max_streams = if self.cfg.max_streams == 0 {
+            usize::MAX
+        } else {
+            self.cfg.max_streams
+        };
+        let max_conns = if self.cfg.max_connections == 0 {
+            usize::MAX
+        } else {
+            self.cfg.max_connections
+        };
 
         let mut sessions = self.sessions.lock().await;
 

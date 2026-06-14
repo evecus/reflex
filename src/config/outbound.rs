@@ -74,8 +74,12 @@ pub struct BrutalConfig {
     pub down_mbps: Option<u64>,
 }
 
-fn default_mux_protocol() -> String { "smux".into() }
-fn default_min_streams() -> usize { 4 }
+fn default_mux_protocol() -> String {
+    "smux".into()
+}
+fn default_min_streams() -> usize {
+    4
+}
 
 // ── WireGuard 出站配置 ────────────────────────────────────────────────────────
 
@@ -148,7 +152,6 @@ pub struct WireGuardOutboundConfig {
     pub tag: String,
 
     // ── sing-box 标准字段 ──────────────────────────────────────────────────
-
     /// 本机 WireGuard 接口地址列表（含前缀长度），对应 sing-box `address`
     /// 与 `local_address` 二选一，优先使用此字段
     #[serde(default)]
@@ -184,7 +187,6 @@ pub struct WireGuardOutboundConfig {
     pub name: Option<String>,
 
     // ── Reflex 扩展（简化单对端写法，兼容其他出站类型风格）────────────────
-
     /// 服务端地址（简化写法，等价于 `peers[0].address`）
     #[serde(default)]
     pub server: Option<String>,
@@ -246,8 +248,12 @@ impl WireGuardOutboundConfig {
     }
 }
 
-fn default_wg_mtu() -> u32 { 1408 }
-fn default_wg_workers() -> usize { 2 }
+fn default_wg_mtu() -> u32 {
+    1408
+}
+fn default_wg_workers() -> usize {
+    2
+}
 
 /// 所有出站类型，用 `type` 字段做 tag。
 #[derive(Debug, Clone, Serialize, Deserialize)]

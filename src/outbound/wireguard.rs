@@ -75,7 +75,8 @@ const LABEL_MAC1: &[u8] = b"mac1----";
 
 fn decode_key_base64(s: &str) -> anyhow::Result<[u8; 32]> {
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(s.trim())
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(s.trim())
         .context("WireGuard key base64 decode failed")?;
     if bytes.len() != 32 {
         anyhow::bail!("WireGuard key must be 32 bytes, got {}", bytes.len());
@@ -134,21 +135,26 @@ fn aead_encrypt(key: &[u8; 32], counter: u64, plain: &[u8], aad: &[u8]) -> Vec<u
     let mut nonce = [0u8; 12];
     nonce[4..12].copy_from_slice(&counter.to_le_bytes());
     cipher
-        .encrypt(
-            ChaChaNonce::from_slice(&nonce),
-            Payload { msg: plain, aad },
-        )
+        .encrypt(ChaChaNonce::from_slice(&nonce), Payload { msg: plain, aad })
         .expect("aead encrypt failed")
 }
 
-fn aead_decrypt(key: &[u8; 32], counter: u64, cipher_text: &[u8], aad: &[u8]) -> anyhow::Result<Vec<u8>> {
+fn aead_decrypt(
+    key: &[u8; 32],
+    counter: u64,
+    cipher_text: &[u8],
+    aad: &[u8],
+) -> anyhow::Result<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(ChaChaKey::from_slice(key));
     let mut nonce = [0u8; 12];
     nonce[4..12].copy_from_slice(&counter.to_le_bytes());
     cipher
         .decrypt(
             ChaChaNonce::from_slice(&nonce),
-            Payload { msg: cipher_text, aad },
+            Payload {
+                msg: cipher_text,
+                aad,
+            },
         )
         .map_err(|e| anyhow!("aead decrypt failed: {e}"))
 }
@@ -198,7 +204,14 @@ impl WgHandshake {
             d.extend_from_slice(&peer_pub);
             d
         });
-        Self { private_key, public_key, peer_pub, psk, chaining_key: initial_hash, hash_val }
+        Self {
+            private_key,
+            public_key,
+            peer_pub,
+            psk,
+            chaining_key: initial_hash,
+            hash_val,
+        }
     }
 
     /// 构建 Initiation 消息（type=1）
@@ -283,9 +296,9 @@ impl WgHandshake {
         let mut msg = Vec::with_capacity(148);
         msg.extend_from_slice(&MSG_INITIATION.to_le_bytes());
         msg.extend_from_slice(&sender_idx.to_le_bytes());
-        msg.extend_from_slice(ephemeral_pub.as_bytes());        // 32B
-        msg.extend_from_slice(&encrypted_static);               // 32+16=48B
-        msg.extend_from_slice(&encrypted_timestamp);            // 12+16=28B
+        msg.extend_from_slice(ephemeral_pub.as_bytes()); // 32B
+        msg.extend_from_slice(&encrypted_static); // 32+16=48B
+        msg.extend_from_slice(&encrypted_timestamp); // 12+16=28B
 
         // mac1 over all above
         let mac1 = &hmac_hash(&mac1_key, &msg)[..16];
@@ -321,7 +334,9 @@ fn hkdf3(key: &[u8; 32], input: &[u8]) -> ([u8; 32], [u8; 32], [u8; 32]) {
 
 fn tai64n_now() -> [u8; 12] {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = now.as_secs() + 4611686018427387914u64; // TAI64 epoch offset
     let nanos = now.subsec_nanos();
     let mut buf = [0u8; 12];
@@ -345,8 +360,7 @@ impl WireGuardOutbound {
         resolver: Option<Arc<DnsResolver>>,
     ) -> anyhow::Result<Self> {
         // 验证私钥格式
-        decode_key_base64(&config.private_key)
-            .context("WireGuard: invalid private_key")?;
+        decode_key_base64(&config.private_key).context("WireGuard: invalid private_key")?;
         // 验证 peers 里的公钥格式
         for peer in config.resolved_peers() {
             if let Some(pk) = &peer.public_key {
@@ -369,9 +383,12 @@ impl WireGuardOutbound {
     /// 解析服务端地址（从 peers 或简化字段）
     async fn resolve_server(&self) -> anyhow::Result<SocketAddr> {
         let peers = self.config.resolved_peers();
-        let peer = peers.first()
+        let peer = peers
+            .first()
             .ok_or_else(|| anyhow!("WireGuard: no peer configured"))?;
-        let host = peer.address.as_deref()
+        let host = peer
+            .address
+            .as_deref()
             .ok_or_else(|| anyhow!("WireGuard: peer has no address"))?;
         let port = peer.port;
         if port == 0 {
@@ -381,21 +398,21 @@ impl WireGuardOutbound {
             return Ok(SocketAddr::new(ip, port));
         }
         if let Some(ref resolver) = self.resolver {
-            let ip = resolver.resolve_domain(host).await
+            let ip = resolver
+                .resolve_domain(host)
+                .await
                 .context("WireGuard: DNS resolve failed")?;
             return Ok(SocketAddr::new(ip, port));
         }
         use tokio::net::lookup_host;
         let mut addrs = lookup_host(format!("{host}:{port}")).await?;
-        addrs.next().ok_or_else(|| anyhow!("WireGuard: no address for {host}"))
+        addrs
+            .next()
+            .ok_or_else(|| anyhow!("WireGuard: no address for {host}"))
     }
 
     /// 建立或复用 WireGuard 会话，返回加密后的 UDP socket
-    async fn ensure_session(
-        &self,
-        udp: &UdpSocket,
-        server_addr: SocketAddr,
-    ) -> anyhow::Result<()> {
+    async fn ensure_session(&self, udp: &UdpSocket, server_addr: SocketAddr) -> anyhow::Result<()> {
         let mut guard = self.session.lock().await;
         if let Some(ref s) = *guard {
             if !s.is_expired() {
@@ -405,7 +422,8 @@ impl WireGuardOutbound {
 
         let private_bytes = decode_key_base64(&self.config.private_key)?;
         let peers = self.config.resolved_peers();
-        let peer = peers.first()
+        let peer = peers
+            .first()
             .ok_or_else(|| anyhow!("WireGuard: no peer configured"))?;
         let peer_pub_bytes = match &peer.public_key {
             Some(k) => decode_key_base64(k)?,
@@ -420,12 +438,14 @@ impl WireGuardOutbound {
         let (init_msg, ck, sender_idx) = hs.build_initiation();
 
         // Send initiation
-        udp.send_to(&init_msg, server_addr).await
+        udp.send_to(&init_msg, server_addr)
+            .await
             .context("WireGuard: send initiation failed")?;
 
         // Wait for response
         let mut resp_buf = vec![0u8; 92];
-        let timeout = time::timeout(HANDSHAKE_TIMEOUT, udp.recv(&mut resp_buf)).await
+        let timeout = time::timeout(HANDSHAKE_TIMEOUT, udp.recv(&mut resp_buf))
+            .await
             .map_err(|_| anyhow!("WireGuard: handshake timeout"))?
             .context("WireGuard: recv response failed")?;
 
@@ -435,7 +455,9 @@ impl WireGuardOutbound {
 
         let msg_type = u32::from_le_bytes(resp_buf[..4].try_into()?);
         if msg_type != MSG_RESPONSE {
-            return Err(anyhow!("WireGuard: expected MSG_RESPONSE(2), got {msg_type}"));
+            return Err(anyhow!(
+                "WireGuard: expected MSG_RESPONSE(2), got {msg_type}"
+            ));
         }
 
         let remote_idx = u32::from_le_bytes(resp_buf[4..8].try_into()?);
@@ -461,13 +483,11 @@ impl WireGuardOutbound {
     }
 
     /// 封装并发送一个 WireGuard 数据包
-    async fn send_packet(
-        &self,
-        udp: &UdpSocket,
-        plain: &[u8],
-    ) -> anyhow::Result<()> {
+    async fn send_packet(&self, udp: &UdpSocket, plain: &[u8]) -> anyhow::Result<()> {
         let mut guard = self.session.lock().await;
-        let sess = guard.as_mut().ok_or_else(|| anyhow!("WireGuard: no active session"))?;
+        let sess = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("WireGuard: no active session"))?;
 
         let counter = sess.send_counter;
         sess.send_counter += 1;
@@ -480,14 +500,19 @@ impl WireGuardOutbound {
         pkt.extend_from_slice(&counter.to_le_bytes());
         pkt.extend_from_slice(&encrypted);
 
-        udp.send(&pkt).await.context("WireGuard: send_packet failed")?;
+        udp.send(&pkt)
+            .await
+            .context("WireGuard: send_packet failed")?;
         Ok(())
     }
 
     /// 接收并解密一个 WireGuard 数据包
     async fn recv_packet(&self, udp: &UdpSocket) -> anyhow::Result<Vec<u8>> {
         let mut buf = vec![0u8; self.config.mtu as usize + 32 + 16];
-        let n = udp.recv(&mut buf).await.context("WireGuard: recv_packet failed")?;
+        let n = udp
+            .recv(&mut buf)
+            .await
+            .context("WireGuard: recv_packet failed")?;
         let pkt = &buf[..n];
 
         if pkt.len() < 32 {
@@ -496,14 +521,18 @@ impl WireGuardOutbound {
 
         let msg_type = u32::from_le_bytes(pkt[..4].try_into()?);
         if msg_type != MSG_DATA {
-            return Err(anyhow!("WireGuard: expected data packet, got type {msg_type}"));
+            return Err(anyhow!(
+                "WireGuard: expected data packet, got type {msg_type}"
+            ));
         }
 
         let counter = u64::from_le_bytes(pkt[8..16].try_into()?);
         let encrypted = &pkt[16..];
 
         let guard = self.session.lock().await;
-        let sess = guard.as_ref().ok_or_else(|| anyhow!("WireGuard: no session"))?;
+        let sess = guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("WireGuard: no session"))?;
         let plain = aead_decrypt(&sess.recv_key, counter, encrypted, &[])?;
         Ok(plain)
     }
@@ -515,10 +544,7 @@ impl Outbound for WireGuardOutbound {
         &self.config.tag
     }
 
-    async fn handle_tcp(
-        &self,
-        conn: InboundTcpStream,
-    ) -> anyhow::Result<(u64, u64)> {
+    async fn handle_tcp(&self, conn: InboundTcpStream) -> anyhow::Result<(u64, u64)> {
         let server_addr = self.resolve_server().await?;
 
         let bind_addr: SocketAddr = if server_addr.is_ipv6() {
@@ -526,7 +552,8 @@ impl Outbound for WireGuardOutbound {
         } else {
             "0.0.0.0:0".parse().unwrap()
         };
-        let udp = UdpSocket::bind(bind_addr).await
+        let udp = UdpSocket::bind(bind_addr)
+            .await
             .context("WireGuard: bind UDP failed")?;
 
         #[cfg(target_os = "linux")]
@@ -534,7 +561,8 @@ impl Outbound for WireGuardOutbound {
             crate::outbound::apply_mark_to_udp(&udp, self.routing_mark)?;
         }
 
-        udp.connect(server_addr).await
+        udp.connect(server_addr)
+            .await
             .context("WireGuard: UDP connect failed")?;
 
         self.ensure_session(&udp, server_addr).await?;
@@ -551,10 +579,7 @@ impl Outbound for WireGuardOutbound {
         ))
     }
 
-    async fn handle_udp(
-        &self,
-        pkt: InboundUdpPacket,
-    ) -> anyhow::Result<()> {
+    async fn handle_udp(&self, pkt: InboundUdpPacket) -> anyhow::Result<()> {
         let server_addr = self.resolve_server().await?;
 
         let bind_addr: SocketAddr = if server_addr.is_ipv6() {
@@ -580,11 +605,11 @@ impl Outbound for WireGuardOutbound {
         let plain = self.recv_packet(&udp).await?;
         let (payload, src_addr) = parse_udp_ip_packet(&plain)?;
 
-        let _ = pkt.session.reply_tx.send((
-            bytes::Bytes::from(payload),
-            pkt.src,
-            src_addr,
-        )).await;
+        let _ = pkt
+            .session
+            .reply_tx
+            .send((bytes::Bytes::from(payload), pkt.src, src_addr))
+            .await;
         Ok(())
     }
 
@@ -602,11 +627,7 @@ impl Outbound for WireGuardOutbound {
 // ── IP/UDP 封包辅助 ────────────────────────────────────────────────────────────
 
 /// 将 payload 封装为 IPv4/UDP 包（用于通过 WireGuard 隧道发送）
-fn build_udp_ip_packet(
-    payload: &[u8],
-    src: &SocketAddr,
-    dst: &Target,
-) -> anyhow::Result<Vec<u8>> {
+fn build_udp_ip_packet(payload: &[u8], src: &SocketAddr, dst: &Target) -> anyhow::Result<Vec<u8>> {
     // 简化：仅支持 IPv4 UDP
     // 完整实现需要处理 IPv6 和 TCP
     let src_ip = match src.ip() {
@@ -614,14 +635,14 @@ fn build_udp_ip_packet(
         IpAddr::V6(_) => return Err(anyhow!("WireGuard: IPv6 not yet supported")),
     };
     let (dst_ip, dst_port) = match dst {
-        Target::Socket(addr) => {
-            match addr.ip() {
-                IpAddr::V4(ip) => (ip.octets(), addr.port()),
-                IpAddr::V6(_) => return Err(anyhow!("WireGuard: IPv6 dst not yet supported")),
-            }
-        }
+        Target::Socket(addr) => match addr.ip() {
+            IpAddr::V4(ip) => (ip.octets(), addr.port()),
+            IpAddr::V6(_) => return Err(anyhow!("WireGuard: IPv6 dst not yet supported")),
+        },
         Target::Domain(_, _) => {
-            return Err(anyhow!("WireGuard: domain target requires DNS resolution in tunnel"));
+            return Err(anyhow!(
+                "WireGuard: domain target requires DNS resolution in tunnel"
+            ));
         }
     };
 
@@ -631,13 +652,13 @@ fn build_udp_ip_packet(
     let mut pkt = vec![0u8; ip_len];
     // IPv4 header
     pkt[0] = 0x45; // version=4, IHL=5
-    pkt[1] = 0;    // DSCP/ECN
+    pkt[1] = 0; // DSCP/ECN
     let total_len = ip_len as u16;
     pkt[2] = (total_len >> 8) as u8;
     pkt[3] = (total_len & 0xff) as u8;
     pkt[6] = 0x40; // Don't fragment
-    pkt[8] = 64;   // TTL
-    pkt[9] = 17;   // UDP
+    pkt[8] = 64; // TTL
+    pkt[9] = 17; // UDP
     pkt[12..16].copy_from_slice(&src_ip);
     pkt[16..20].copy_from_slice(&dst_ip);
 
@@ -715,11 +736,9 @@ mod tests {
     fn ip_checksum_known_value() {
         // RFC 1071 example header with zero checksum field
         let hdr = [
-            0x45, 0x00, 0x00, 0x3c,
-            0x1c, 0x46, 0x40, 0x00,
-            0x40, 0x06, 0x00, 0x00, // checksum = 0
-            0xac, 0x10, 0x0a, 0x63,
-            0xac, 0x10, 0x0a, 0x0c,
+            0x45, 0x00, 0x00, 0x3c, 0x1c, 0x46, 0x40, 0x00, 0x40, 0x06, 0x00,
+            0x00, // checksum = 0
+            0xac, 0x10, 0x0a, 0x63, 0xac, 0x10, 0x0a, 0x0c,
         ];
         let cksum = ip_checksum(&hdr);
         // fill result back and verify

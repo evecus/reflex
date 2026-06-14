@@ -423,8 +423,11 @@ impl App {
                         let ui_dir2 = ui_dir.clone();
                         tasks.spawn(async move {
                             if let Err(e) = crate::app::clash_api::download_external_ui(
-                                &ui_dir2, download_url.as_deref(),
-                            ).await {
+                                &ui_dir2,
+                                download_url.as_deref(),
+                            )
+                            .await
+                            {
                                 tracing::warn!("external ui download failed: {e}");
                             }
                             Ok(())

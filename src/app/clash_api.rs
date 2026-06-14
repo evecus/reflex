@@ -1055,7 +1055,10 @@ impl ClashApi {
                     },
                 }))
             }
-            _ => json_response_status(404, json!({"message": format!("rule_set '{name}' not found")})),
+            _ => json_response_status(
+                404,
+                json!({"message": format!("rule_set '{name}' not found")}),
+            ),
         }
     }
 
@@ -1074,7 +1077,9 @@ impl ClashApi {
 
         let name = match params.get("name") {
             Some(n) => *n,
-            None => return json_response_status(400, json!({"message": "missing 'name' parameter"})),
+            None => {
+                return json_response_status(400, json!({"message": "missing 'name' parameter"}))
+            }
         };
         let qtype_str = params.get("type").copied().unwrap_or("A");
 
@@ -1100,7 +1105,9 @@ impl ClashApi {
 
         let resolver = match &self.dns_resolver {
             Some(r) => r.clone(),
-            None => return json_response_status(503, json!({"message": "DNS resolver not available"})),
+            None => {
+                return json_response_status(503, json!({"message": "DNS resolver not available"}))
+            }
         };
 
         match resolver.resolve_raw(name, qtype).await {
@@ -1150,10 +1157,7 @@ impl ClashApi {
         let ui_dir = match &self.config.external_ui {
             Some(d) => d.clone(),
             None => {
-                return json_response_status(
-                    404,
-                    json!({"message": "external_ui not configured"}),
-                )
+                return json_response_status(404, json!({"message": "external_ui not configured"}))
             }
         };
         let download_url = self.config.external_ui_download_url.clone();
@@ -1685,8 +1689,11 @@ impl HttpResponse {
     fn to_bytes(&self) -> Vec<u8> {
         let mut response = format!(
             "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-            self.status, self.reason, self.body.len()
-        ).into_bytes();
+            self.status,
+            self.reason,
+            self.body.len()
+        )
+        .into_bytes();
         for (name, value) in &self.headers {
             response.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
         }
@@ -1887,10 +1894,7 @@ const DEFAULT_UI_DOWNLOAD_URL: &str =
 /// 与 sing-box `downloadExternalUI` 逻辑对齐：
 /// - URL 不填时使用 metacubexd 默认地址
 /// - 支持 zip 格式；若 zip 内所有文件都在同一顶层目录下，自动去掉该目录层
-pub async fn download_external_ui(
-    ui_dir: &str,
-    download_url: Option<&str>,
-) -> anyhow::Result<()> {
+pub async fn download_external_ui(ui_dir: &str, download_url: Option<&str>) -> anyhow::Result<()> {
     let url = download_url.unwrap_or(DEFAULT_UI_DOWNLOAD_URL);
     tracing::info!(url, ui_dir, "downloading external UI");
 
@@ -1909,8 +1913,7 @@ pub async fn download_external_ui(
         .await
         .map_err(|e| anyhow::anyhow!("download body error: {e}"))?;
 
-    extract_zip(&bytes, ui_dir)
-        .map_err(|e| anyhow::anyhow!("zip extraction failed: {e}"))?;
+    extract_zip(&bytes, ui_dir).map_err(|e| anyhow::anyhow!("zip extraction failed: {e}"))?;
 
     tracing::info!(ui_dir, "external UI downloaded and extracted");
     Ok(())
@@ -1926,26 +1929,36 @@ fn extract_zip(data: &[u8], output_dir: &str) -> anyhow::Result<()> {
 
     while pos + 30 <= data.len() {
         // Local file header signature: 0x04034b50 (PK\x03\x04)
-        if data[pos..pos+4] != [0x50, 0x4b, 0x03, 0x04] {
+        if data[pos..pos + 4] != [0x50, 0x4b, 0x03, 0x04] {
             break;
         }
-        let method = u16::from_le_bytes([data[pos+8], data[pos+9]]);
-        let compressed_size = u32::from_le_bytes([data[pos+18], data[pos+19],
-                                                   data[pos+20], data[pos+21]]) as usize;
-        let fname_len = u16::from_le_bytes([data[pos+26], data[pos+27]]) as usize;
-        let extra_len = u16::from_le_bytes([data[pos+28], data[pos+29]]) as usize;
+        let method = u16::from_le_bytes([data[pos + 8], data[pos + 9]]);
+        let compressed_size = u32::from_le_bytes([
+            data[pos + 18],
+            data[pos + 19],
+            data[pos + 20],
+            data[pos + 21],
+        ]) as usize;
+        let fname_len = u16::from_le_bytes([data[pos + 26], data[pos + 27]]) as usize;
+        let extra_len = u16::from_le_bytes([data[pos + 28], data[pos + 29]]) as usize;
         pos += 30;
 
-        if pos + fname_len + extra_len > data.len() { break; }
-        let fname = String::from_utf8_lossy(&data[pos..pos+fname_len]).into_owned();
+        if pos + fname_len + extra_len > data.len() {
+            break;
+        }
+        let fname = String::from_utf8_lossy(&data[pos..pos + fname_len]).into_owned();
         pos += fname_len + extra_len;
 
-        if pos + compressed_size > data.len() { break; }
-        let compressed = &data[pos..pos+compressed_size];
+        if pos + compressed_size > data.len() {
+            break;
+        }
+        let compressed = &data[pos..pos + compressed_size];
         pos += compressed_size;
 
         // 跳过目录条目
-        if fname.ends_with('/') { continue; }
+        if fname.ends_with('/') {
+            continue;
+        }
 
         let decompressed = match method {
             0 => compressed.to_vec(), // store
@@ -1954,7 +1967,8 @@ fn extract_zip(data: &[u8], output_dir: &str) -> anyhow::Result<()> {
                 use std::io::Read;
                 let mut decoder = flate2::read::DeflateDecoder::new(compressed);
                 let mut out = Vec::new();
-                decoder.read_to_end(&mut out)
+                decoder
+                    .read_to_end(&mut out)
                     .map_err(|e| anyhow::anyhow!("deflate error for '{fname}': {e}"))?;
                 out
             }
@@ -1979,7 +1993,10 @@ fn extract_zip(data: &[u8], output_dir: &str) -> anyhow::Result<()> {
             let top = name.split('/').next().unwrap_or("");
             match first {
                 None => first = Some(top),
-                Some(f) if f != top => { single = false; break; }
+                Some(f) if f != top => {
+                    single = false;
+                    break;
+                }
                 _ => {}
             }
         }
@@ -1988,11 +2005,17 @@ fn extract_zip(data: &[u8], output_dir: &str) -> anyhow::Result<()> {
 
     for (fname, content) in entries {
         let rel = if trim_prefix {
-            fname.split_once('/').map(|x| x.1).unwrap_or(&fname).to_string()
+            fname
+                .split_once('/')
+                .map(|x| x.1)
+                .unwrap_or(&fname)
+                .to_string()
         } else {
             fname.clone()
         };
-        if rel.is_empty() || rel.contains("..") { continue; }
+        if rel.is_empty() || rel.contains("..") {
+            continue;
+        }
 
         let dest = std::path::Path::new(output_dir).join(&rel);
         if let Some(parent) = dest.parent() {
@@ -2010,9 +2033,13 @@ fn extract_zip(data: &[u8], output_dir: &str) -> anyhow::Result<()> {
 /// 从原始 DNS 报文字节解析 Answer 记录，返回 Clash API 格式的 JSON 数组。
 fn parse_dns_answers(raw: &[u8]) -> Vec<serde_json::Value> {
     // 最小 DNS 报文长度：12 字节 header
-    if raw.len() < 12 { return vec![]; }
+    if raw.len() < 12 {
+        return vec![];
+    }
     let ancount = u16::from_be_bytes([raw[6], raw[7]]) as usize;
-    if ancount == 0 { return vec![]; }
+    if ancount == 0 {
+        return vec![];
+    }
 
     let mut answers = Vec::new();
     // 跳过 header (12B) + question section
@@ -2024,21 +2051,29 @@ fn parse_dns_answers(raw: &[u8]) -> Vec<serde_json::Value> {
         // 跳过 QNAME（以 0 结尾的 label 序列）
         pos = skip_dns_name(raw, pos);
         pos += 4; // QTYPE + QCLASS
-        if pos > raw.len() { return vec![]; }
+        if pos > raw.len() {
+            return vec![];
+        }
     }
 
     // 解析 Answer records
     for _ in 0..ancount {
-        if pos >= raw.len() { break; }
-        pos = skip_dns_name(raw, pos);  // NAME
-        if pos + 10 > raw.len() { break; }
-        let rtype = u16::from_be_bytes([raw[pos], raw[pos+1]]);
-        let _rclass = u16::from_be_bytes([raw[pos+2], raw[pos+3]]);
-        let ttl = u32::from_be_bytes([raw[pos+4], raw[pos+5], raw[pos+6], raw[pos+7]]);
-        let rdlength = u16::from_be_bytes([raw[pos+8], raw[pos+9]]) as usize;
+        if pos >= raw.len() {
+            break;
+        }
+        pos = skip_dns_name(raw, pos); // NAME
+        if pos + 10 > raw.len() {
+            break;
+        }
+        let rtype = u16::from_be_bytes([raw[pos], raw[pos + 1]]);
+        let _rclass = u16::from_be_bytes([raw[pos + 2], raw[pos + 3]]);
+        let ttl = u32::from_be_bytes([raw[pos + 4], raw[pos + 5], raw[pos + 6], raw[pos + 7]]);
+        let rdlength = u16::from_be_bytes([raw[pos + 8], raw[pos + 9]]) as usize;
         pos += 10;
-        if pos + rdlength > raw.len() { break; }
-        let rdata = &raw[pos..pos+rdlength];
+        if pos + rdlength > raw.len() {
+            break;
+        }
+        let rdata = &raw[pos..pos + rdlength];
         pos += rdlength;
 
         let data = match rtype {
@@ -2046,7 +2081,10 @@ fn parse_dns_answers(raw: &[u8]) -> Vec<serde_json::Value> {
             28 if rdlength == 16 => {
                 let mut parts = Vec::new();
                 for i in 0..8 {
-                    parts.push(format!("{:x}", u16::from_be_bytes([rdata[i*2], rdata[i*2+1]])));
+                    parts.push(format!(
+                        "{:x}",
+                        u16::from_be_bytes([rdata[i * 2], rdata[i * 2 + 1]])
+                    ));
                 }
                 parts.join(":")
             }
@@ -2065,10 +2103,16 @@ fn parse_dns_answers(raw: &[u8]) -> Vec<serde_json::Value> {
 
 fn skip_dns_name(raw: &[u8], mut pos: usize) -> usize {
     loop {
-        if pos >= raw.len() { return pos; }
+        if pos >= raw.len() {
+            return pos;
+        }
         let len = raw[pos] as usize;
-        if len == 0 { return pos + 1; }
-        if len & 0xc0 == 0xc0 { return pos + 2; } // 压缩指针
+        if len == 0 {
+            return pos + 1;
+        }
+        if len & 0xc0 == 0xc0 {
+            return pos + 2;
+        } // 压缩指针
         pos += 1 + len;
     }
 }

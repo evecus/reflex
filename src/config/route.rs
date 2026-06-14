@@ -390,7 +390,10 @@ mod tests {
         // source + update_interval
         assert_eq!(route.rule_set[1].format, RuleSetFormat::Source);
         assert_eq!(route.rule_set[1].update_interval.as_deref(), Some("24h"));
-        assert_eq!(route.rule_set[1].url.as_deref(), Some("https://example.com/geosite-ads.json"));
+        assert_eq!(
+            route.rule_set[1].url.as_deref(),
+            Some("https://example.com/geosite-ads.json")
+        );
 
         // source 本地
         assert_eq!(route.rule_set[2].format, RuleSetFormat::Source);

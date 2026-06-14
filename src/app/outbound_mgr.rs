@@ -129,9 +129,10 @@ impl OutboundManager {
                 OutboundConfig::WireGuard(c) => {
                     let mut cfg = c.clone();
                     cfg.routing_mark = routing_mark;
-                    Arc::new(
-                        crate::outbound::wireguard::WireGuardOutbound::new(cfg, resolver.clone())?
-                    )
+                    Arc::new(crate::outbound::wireguard::WireGuardOutbound::new(
+                        cfg,
+                        resolver.clone(),
+                    )?)
                 }
                 #[cfg(not(feature = "outbound-net"))]
                 OutboundConfig::WireGuard(c) => fallback_block(&c.tag, "WireGuard"),

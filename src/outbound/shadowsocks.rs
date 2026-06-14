@@ -37,9 +37,9 @@ use hkdf::Hkdf;
 use md5::{Digest as _, Md5};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::client_async_tls_with_config;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tracing::debug;
 
 use crate::{
@@ -663,7 +663,12 @@ impl ShadowsocksOutbound {
         };
 
         // 多路复用连接池（如果配置了 multiplex.enabled）
-        let mux_pool = if config.multiplex.as_ref().map(|m| m.enabled).unwrap_or(false) {
+        let mux_pool = if config
+            .multiplex
+            .as_ref()
+            .map(|m| m.enabled)
+            .unwrap_or(false)
+        {
             let mux_cfg = config.multiplex.clone().unwrap_or_default();
             let server = config.server.clone();
             let port = config.server_port;
@@ -860,8 +865,7 @@ impl ShadowsocksOutbound {
             None
         };
 
-        let (ws_stream, _) =
-            client_async_tls_with_config(request, tcp, None, connector).await?;
+        let (ws_stream, _) = client_async_tls_with_config(request, tcp, None, connector).await?;
 
         // 将 WS 流包装成 AsyncRead+AsyncWrite，复用 SsXhttpStream 做 AEAD 层
         // WsRawStream 在 vmess 模块内部，这里内联实现一个轻量版本
@@ -891,11 +895,7 @@ impl ShadowsocksOutbound {
             use futures_util::SinkExt;
             let mut sink = ws_sink;
             while let Some(data) = rx_write.recv().await {
-                if sink
-                    .send(Message::Binary(data.to_vec()))
-                    .await
-                    .is_err()
-                {
+                if sink.send(Message::Binary(data.to_vec())).await.is_err() {
                     break;
                 }
             }
@@ -952,7 +952,8 @@ impl Outbound for ShadowsocksOutbound {
             let first_payload = encode_target(&conn.target);
             let salt = self.random_salt();
             let subkey = self.derive_subkey(&salt);
-            let ss_stream = ss_wrap_xhttp(mux_stream, self.method, subkey, salt, first_payload).await?;
+            let ss_stream =
+                ss_wrap_xhttp(mux_stream, self.method, subkey, salt, first_payload).await?;
             let (bytes_up, bytes_dn) = crate::outbound::relay(conn.stream, ss_stream).await;
             return Ok((bytes_up, bytes_dn));
         }

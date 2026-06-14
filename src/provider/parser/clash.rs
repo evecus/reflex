@@ -509,7 +509,6 @@ fn build_wireguard(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig>
     }))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

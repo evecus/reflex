@@ -62,7 +62,9 @@ pub async fn connect_utls(
     let sni = rustls::pki_types::ServerName::try_from(server_name.to_string())
         .map_err(|_| anyhow::anyhow!("utls: invalid server name: {server_name}"))?;
 
-    let tls = connector.connect(sni, wrapped).await
+    let tls = connector
+        .connect(sni, wrapped)
+        .await
         .map_err(|e| anyhow::anyhow!("utls handshake failed: {e}"))?;
     Ok(tls)
 }
@@ -99,7 +101,12 @@ fn resolve_fingerprint(fp: &UtlsFingerprint) -> FpKind {
 fn build_client_hello(sni: &str, fp: FpKind, alpn_override: &[String]) -> Vec<u8> {
     let fp = match fp {
         FpKind::Random => {
-            let choices = [FpKind::Chrome, FpKind::Firefox, FpKind::Safari, FpKind::Edge];
+            let choices = [
+                FpKind::Chrome,
+                FpKind::Firefox,
+                FpKind::Safari,
+                FpKind::Edge,
+            ];
             choices[rand::thread_rng().gen_range(0..choices.len())]
         }
         other => other,
@@ -193,21 +200,13 @@ const CHROME_CIPHERS: &[u16] = &[
 ];
 
 const FIREFOX_CIPHERS: &[u16] = &[
-    0x1301, 0x1302, 0x1303,
-    0xc02b, 0xc02f, 0xc02c, 0xc030,
-    0xcca9, 0xcca8,
-    0xc009, 0xc00a, 0xc013, 0xc014,
-    0x002f, 0x0035,
+    0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f, 0xc02c, 0xc030, 0xcca9, 0xcca8, 0xc009, 0xc00a, 0xc013,
+    0xc014, 0x002f, 0x0035,
 ];
 
 const SAFARI_CIPHERS: &[u16] = &[
-    0x1301, 0x1302, 0x1303,
-    0xc02c, 0xc02b, 0xc030, 0xc02f,
-    0xcca9, 0xcca8,
-    0xc024, 0xc023, 0xc028, 0xc027,
-    0xc00a, 0xc009, 0xc014, 0xc013,
-    0x009d, 0x009c, 0x003d, 0x003c,
-    0x0035, 0x002f,
+    0x1301, 0x1302, 0x1303, 0xc02c, 0xc02b, 0xc030, 0xc02f, 0xcca9, 0xcca8, 0xc024, 0xc023, 0xc028,
+    0xc027, 0xc00a, 0xc009, 0xc014, 0xc013, 0x009d, 0x009c, 0x003d, 0x003c, 0x0035, 0x002f,
 ];
 
 fn cipher_suites_for(fp: FpKind) -> Vec<u16> {
@@ -217,24 +216,21 @@ fn cipher_suites_for(fp: FpKind) -> Vec<u16> {
         FpKind::Safari => SAFARI_CIPHERS,
     };
     // 将 GREASE 0xdada 替换为随机 GREASE 值（格式：0xXAXA，X 随机）
-    base.iter().map(|&cs| {
-        if cs == 0xdada {
-            let x = rand::thread_rng().gen_range(0u16..=15) * 0x1111 + 0x0a0a;
-            x
-        } else {
-            cs
-        }
-    }).collect()
+    base.iter()
+        .map(|&cs| {
+            if cs == 0xdada {
+                let x = rand::thread_rng().gen_range(0u16..=15) * 0x1111 + 0x0a0a;
+                x
+            } else {
+                cs
+            }
+        })
+        .collect()
 }
 
 // ── Extensions ───────────────────────────────────────────────────────────────
 
-fn build_extensions(
-    sni: &str,
-    fp: FpKind,
-    ks_pub: &[u8; 32],
-    alpn_override: &[String],
-) -> Vec<u8> {
+fn build_extensions(sni: &str, fp: FpKind, ks_pub: &[u8; 32], alpn_override: &[String]) -> Vec<u8> {
     let mut exts = Vec::new();
 
     // GREASE extension (Chrome/Edge)
@@ -321,12 +317,10 @@ fn build_extensions(
     {
         let algs: &[u16] = match fp {
             FpKind::Firefox => &[
-                0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806,
-                0x0601, 0x0201,
+                0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201,
             ],
             _ => &[
-                0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806,
-                0x0601,
+                0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601,
             ],
         };
         let mut d = Vec::new();
@@ -347,8 +341,10 @@ fn build_extensions(
     {
         // ClientShares: one entry for x25519 (0x001d)
         let mut share = Vec::new();
-        share.push(0x00); share.push(0x1d); // group x25519
-        share.push(0x00); share.push(0x20); // key_exchange length 32
+        share.push(0x00);
+        share.push(0x1d); // group x25519
+        share.push(0x00);
+        share.push(0x20); // key_exchange length 32
         share.extend_from_slice(ks_pub);
 
         let shares_len = share.len() as u16;
@@ -431,7 +427,10 @@ pin_project_lite::pin_project! {
 
 impl UtlsStream {
     pub fn new(inner: TcpStream, fake_hello: Vec<u8>) -> Self {
-        Self { inner, fake_hello: Some(fake_hello) }
+        Self {
+            inner,
+            fake_hello: Some(fake_hello),
+        }
     }
 }
 
@@ -533,9 +532,8 @@ mod tests {
             assert_eq!(lo, 0x0a + ((g & 0xf0) >> 4) * 0x10 + 0x0a - (lo & 0x0f));
             // Simpler: just check it's in the known GREASE set
             let valid = [
-                0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a,
-                0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a, 0xaaaa, 0xbaba,
-                0xcaca, 0xdada, 0xeaea, 0xfafa,
+                0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a,
+                0xaaaa, 0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
             ];
             assert!(valid.contains(&g), "0x{g:04x} is not a valid GREASE value");
         }

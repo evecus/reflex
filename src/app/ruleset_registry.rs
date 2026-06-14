@@ -101,7 +101,8 @@ impl RuleSetRegistry {
                     .map_err(|e| anyhow::anyhow!("rule_set '{tag}': source parse error: {e}"))?
             };
             let mut buf = Vec::new();
-            compiled.serialize(&mut buf)
+            compiled
+                .serialize(&mut buf)
                 .map_err(|e| anyhow::anyhow!("rule_set '{tag}': compile error: {e}"))?;
             let loaded = crate::ruleset::LoadedRuleSet::from_bytes(&buf)
                 .map_err(|e| anyhow::anyhow!("rule_set '{tag}': internal error: {e}"))?;
