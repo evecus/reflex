@@ -427,6 +427,7 @@ impl App {
                             ).await {
                                 tracing::warn!("external ui download failed: {e}");
                             }
+                            Ok(())
                         });
                     }
                 }
@@ -440,7 +441,7 @@ impl App {
                     config.log.level,
                     conn_tracker.clone(),
                     rs_registry,
-                    dns_resolver.clone(),
+                    Some(dns_resolver.clone()),
                 );
                 tasks.spawn(async move { clash_api.run().await });
             }

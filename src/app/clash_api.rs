@@ -1171,7 +1171,7 @@ impl ClashApi {
                 json_response(json!({"status": "ok"}))
             }
             Err(e) => {
-                warn!(ui_dir, err = %e, "clash api: external UI upgrade failed");
+                tracing::warn!(ui_dir, err = %e, "clash api: external UI upgrade failed");
                 json_response_status(500, json!({"message": e.to_string()}))
             }
         }
