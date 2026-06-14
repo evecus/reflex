@@ -16,6 +16,34 @@ pub struct RouteConfig {
     /// 是否对 DNS 响应中的 IP 也做路由（用于 fake-ip 或 IP 分流）
     #[serde(default)]
     pub resolve_dns: bool,
+
+    /// 自动检测并绑定默认出口网络接口（仅 Linux / macOS / Windows 支持）。
+    ///
+    /// 启用后，direct 出站会自动绑定到系统路由表中优先级最高的物理接口，
+    /// 解决多网卡/VPN 环境下直连流量走错接口的问题。
+    /// 与 sing-box `route.auto_detect_interface` 字段对齐。
+    ///
+    /// 典型用法：
+    /// ```json
+    /// "route": { "auto_detect_interface": true, "final": "🚀 节点选择" }
+    /// ```
+    #[serde(default)]
+    pub auto_detect_interface: bool,
+
+    /// 默认出口网络接口名称（覆盖自动检测结果）。
+    ///
+    /// 与 sing-box `route.default_interface` 对齐。
+    /// 填写后强制所有 direct 连接绑定到该接口；与 `auto_detect_interface`
+    /// 同时使用时本字段优先。
+    #[serde(default)]
+    pub default_interface: Option<String>,
+
+    /// 默认路由标记（Linux fwmark，仅 Linux 支持）。
+    ///
+    /// 与 sing-box `route.default_mark` 对齐。
+    /// 用于配合 iptables/nftables 策略路由，避免代理流量形成回环。
+    #[serde(default)]
+    pub default_mark: Option<u32>,
 }
 
 // ── Rule ─────────────────────────────────────────────────────────────────────
@@ -32,6 +60,18 @@ pub struct RouteRuleConfig {
     /// 网络类型过滤
     #[serde(default)]
     pub network: Option<NetworkFilter>,
+
+    /// 来源 IP CIDR（OR），匹配连接的源地址。
+    ///
+    /// 与 sing-box `source_ip_cidr` 字段对齐。
+    /// 支持 IPv4 和 IPv6 CIDR，例如 `["192.168.0.0/16", "10.0.0.0/8"]`。
+    ///
+    /// 典型用法：限制只有局域网来源的流量走直连：
+    /// ```json
+    /// { "source_ip_cidr": ["192.168.0.0/16"], "outbound": "direct" }
+    /// ```
+    #[serde(default)]
+    pub source_ip_cidr: Vec<String>,
 
     // ── 目标条件 ──────────────────────────────────────────────
     /// 命中的 ruleset tag（OR），同时支持域名和 IP 规则集
@@ -50,6 +90,18 @@ pub struct RouteRuleConfig {
     #[serde(default)]
     pub domain_keyword: Vec<String>,
 
+    /// 内联域名正则表达式（OR）。
+    ///
+    /// 与 sing-box `domain_regex` 字段对齐。匹配目标域名（大小写不敏感）。
+    /// 每个元素是一个 Rust/Go 兼容的正则表达式。
+    ///
+    /// 示例：匹配所有 Google 相关域名：
+    /// ```json
+    /// { "domain_regex": ["^.*\\.google\\.com$", "^.*\\.googleapis\\.com$"], "outbound": "proxy" }
+    /// ```
+    #[serde(default)]
+    pub domain_regex: Vec<String>,
+
     /// 内联 IP CIDR（OR），支持 v4 和 v6
     #[serde(default)]
     pub ip_cidr: Vec<String>,
@@ -61,6 +113,23 @@ pub struct RouteRuleConfig {
     /// 目标端口范围（备用写法，与 port 字段合并处理）
     #[serde(default)]
     pub port_range: Vec<String>,
+
+    // ── 规则反转 ──────────────────────────────────────────────
+    /// 反转所有匹配条件的结果（逻辑 NOT）。
+    ///
+    /// 与 sing-box `invert` 字段对齐。
+    /// 设为 true 时，规则在所有其他条件**均不命中**时才触发。
+    ///
+    /// 示例：所有非国内流量走代理：
+    /// ```json
+    /// { "ruleset": ["geosite-cn"], "invert": true, "outbound": "proxy" }
+    /// ```
+    /// 等价于：未命中 geosite-cn 的流量 → proxy。
+    ///
+    /// 注意：`invert` 对 `sniff`、`resolve`、`hijack_dns` 等动作类字段无效，
+    /// 只反转地址/协议/端口等匹配条件的聚合结果。
+    #[serde(default)]
+    pub invert: bool,
 
     // ── 嗅探 ─────────────────────────────────────────────────
     /// 命中本规则时先对 TCP 流做协议嗅探，
@@ -165,7 +234,9 @@ impl RouteRuleConfig {
             || !self.domain.is_empty()
             || !self.domain_suffix.is_empty()
             || !self.domain_keyword.is_empty()
+            || !self.domain_regex.is_empty()
             || !self.ip_cidr.is_empty()
+            || !self.source_ip_cidr.is_empty()
             || !self.port.is_empty()
             || !self.port_range.is_empty()
             || self.private_ip
@@ -351,6 +422,92 @@ mod tests {
     }
 
     #[test]
+    fn parse_domain_regex() {
+        let v = json!({
+            "rules": [
+                {
+                    "domain_regex": ["^.*\\.google\\.com$", "^.*\\.googleapis\\.com$"],
+                    "outbound": "proxy"
+                }
+            ],
+            "final": "direct"
+        });
+        let route: RouteConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(route.rules[0].domain_regex.len(), 2);
+        assert_eq!(route.rules[0].domain_regex[0], "^.*\\.google\\.com$");
+    }
+
+    #[test]
+    fn parse_source_ip_cidr() {
+        let v = json!({
+            "rules": [
+                {
+                    "source_ip_cidr": ["192.168.0.0/16", "10.0.0.0/8"],
+                    "outbound": "direct"
+                }
+            ],
+            "final": "proxy"
+        });
+        let route: RouteConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(route.rules[0].source_ip_cidr.len(), 2);
+    }
+
+    #[test]
+    fn parse_invert() {
+        let v = json!({
+            "rules": [
+                {
+                    "ruleset": ["geosite-cn"],
+                    "invert": true,
+                    "outbound": "proxy"
+                }
+            ],
+            "final": "direct"
+        });
+        let route: RouteConfig = serde_json::from_value(v).unwrap();
+        assert!(route.rules[0].invert);
+    }
+
+    #[test]
+    fn parse_auto_detect_interface() {
+        let v = json!({
+            "rules": [],
+            "final": "proxy",
+            "auto_detect_interface": true,
+            "default_interface": "eth0",
+            "default_mark": 100
+        });
+        let route: RouteConfig = serde_json::from_value(v).unwrap();
+        assert!(route.auto_detect_interface);
+        assert_eq!(route.default_interface.as_deref(), Some("eth0"));
+        assert_eq!(route.default_mark, Some(100));
+    }
+
+    #[test]
+    fn has_conditions_with_new_fields() {
+        let base = RouteRuleConfig::default();
+
+        let with_regex = RouteRuleConfig {
+            domain_regex: vec![".*\\.google\\.com".into()],
+            ..base.clone()
+        };
+        assert!(with_regex.has_conditions());
+
+        let with_src_cidr = RouteRuleConfig {
+            source_ip_cidr: vec!["192.168.0.0/16".into()],
+            ..base.clone()
+        };
+        assert!(with_src_cidr.has_conditions());
+
+        // invert 单独不算条件
+        let invert_only = RouteRuleConfig {
+            invert: true,
+            ..base.clone()
+        };
+        assert!(!invert_only.has_conditions());
+    }
+
+    #[test]
     fn parse_ruleset_format_and_update_interval() {
         let v = json!({
             "rules": [],
@@ -434,7 +591,9 @@ mod tests {
             domain: vec![],
             domain_suffix: vec![],
             domain_keyword: vec![],
+            domain_regex: vec![],
             ip_cidr: vec![],
+            source_ip_cidr: vec![],
             port: vec![],
             port_range: vec![],
             sniff: false,
@@ -445,6 +604,7 @@ mod tests {
             resolve_server: None,
             private_ip: false,
             hijack_dns: false,
+            invert: false,
             outbound: "direct".into(),
         };
         assert!(!empty.has_conditions());
