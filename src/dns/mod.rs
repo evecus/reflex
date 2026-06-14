@@ -362,6 +362,24 @@ impl DnsResolver {
         (cache_len, inflight_len, fakeip_sizes)
     }
 
+    /// 清空内存 DNS 缓存（对应 Clash API `POST /cache/dns/flush`）。
+    pub fn clear_cache(&self) {
+        if let Some(ref cache) = self.cache {
+            cache.clear();
+            tracing::info!("dns cache flushed");
+        }
+    }
+
+    /// 对指定域名和类型进行一次 DNS 查询，返回原始 DNS 报文。
+    /// 用于 Clash API `GET /dns/query?name=...&type=A`。
+    pub async fn resolve_raw(&self, name: &str, qtype: u16) -> anyhow::Result<Vec<u8>> {
+        let query = build_query_bytes(name, qtype);
+        // 用 default upstream 直接查询（不走路由规则，不影响 fake-ip 分配）
+        let resp = self.default.query(bytes::Bytes::from(query)).await
+            .map_err(|e| anyhow::anyhow!("dns query failed: {e}"))?;
+        Ok(resp.to_vec())
+    }
+
     pub async fn run(self: Arc<Self>, mut rx: mpsc::Receiver<DnsQuery>) {
         while let Some(query) = rx.recv().await {
             let resolver = self.clone();

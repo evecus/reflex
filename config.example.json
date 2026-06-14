@@ -546,12 +546,28 @@
       "store_fakeip": true
     },
 
-    // Clash API / 外部控制器：可配合 Clash Dashboard / Yacd / MetaCubeX UI 使用
+    // Clash API / 外部控制器：可配合 MetaCubeX Dashboard / Yacd 使用
     "clash_api": {
       "enabled": true,
       "default_mode": "rule",
+      "mode_list": ["rule", "global", "direct"],
+      // external_controller：API 监听地址
       "external_controller": "0.0.0.0:9090",
-      "external_ui": "ui"
+      // secret：API 鉴权密钥（空则不验证）
+      "secret": "",
+      // external_ui：静态 Web UI 目录路径
+      // 目录不存在或为空时，会自动从 external_ui_download_url 下载
+      "external_ui": "ui",
+      // external_ui_download_url：UI zip 下载地址，与 sing-box 字段对齐
+      // 不填时默认下载 MetaCubeX/metacubexd 最新版
+      "external_ui_download_url": "https://github.com/MetaCubeX/metacubexd/releases/latest/download/compressed-dist.tgz",
+      // external_ui_download_detour：下载 UI 时使用的出站（不填则直连）
+      "external_ui_download_detour": "",
+      // access_control_allow_origin：CORS 来源白名单，与 sing-box 字段对齐
+      // 不填默认允许所有来源 (*)
+      "access_control_allow_origin": [],
+      // access_control_allow_private_network：允许浏览器私有网络访问
+      "access_control_allow_private_network": false
     }
   },
   // 日志配置

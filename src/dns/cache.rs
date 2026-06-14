@@ -208,6 +208,12 @@ impl DnsCache {
         self.len() == 0
     }
 
+    /// 清空全部内存缓存条目（对应 Clash API `POST /cache/dns/flush`）。
+    pub fn clear(&self) {
+        self.inner.lock().unwrap().clear();
+        self.inflight.lock().unwrap().clear();
+    }
+
     fn insert_memory(&self, key: CacheKey, resp: Bytes, ttl_secs: u32) {
         let expires = Instant::now() + Duration::from_secs(ttl_secs as u64);
         let mut inner = self.inner.lock().unwrap();

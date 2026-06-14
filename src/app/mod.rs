@@ -411,6 +411,26 @@ impl App {
                     config.route.clone(),
                     router.ruleset_meta.clone(),
                 );
+
+                // ── UI 自动下载（external_ui 目录不存在或为空时）────────────
+                if let Some(ref ui_dir) = clash_api_config.external_ui {
+                    let ui_dir = ui_dir.clone();
+                    let download_url = clash_api_config.external_ui_download_url.clone();
+                    let needs_download = std::fs::read_dir(&ui_dir)
+                        .map(|mut d| d.next().is_none())
+                        .unwrap_or(true); // 目录不存在也触发下载
+                    if needs_download {
+                        let ui_dir2 = ui_dir.clone();
+                        tasks.spawn(async move {
+                            if let Err(e) = crate::app::clash_api::download_external_ui(
+                                &ui_dir2, download_url.as_deref(),
+                            ).await {
+                                tracing::warn!("external ui download failed: {e}");
+                            }
+                        });
+                    }
+                }
+
                 let clash_api = ClashApi::new(
                     clash_api_config,
                     outbound_mgr.clone(),
@@ -420,6 +440,7 @@ impl App {
                     config.log.level,
                     conn_tracker.clone(),
                     rs_registry,
+                    dns_resolver.clone(),
                 );
                 tasks.spawn(async move { clash_api.run().await });
             }

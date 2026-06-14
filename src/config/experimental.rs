@@ -53,7 +53,7 @@ impl Default for CacheFileConfig {
     }
 }
 
-/// clash_api 子配置（兼容 Clash/Sing-Box 风格 external controller）
+/// clash_api 子配置，与 sing-box ClashAPIOptions 字段完全对齐。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClashApiConfig {
     /// 是否启用 Clash API。配置了 clash_api 时默认启用。
@@ -69,6 +69,7 @@ pub struct ClashApiConfig {
     pub mode_list: Vec<String>,
 
     /// HTTP API 监听地址，如 "127.0.0.1:9090" 或 "0.0.0.0:9090"。
+    /// 与 sing-box `external_controller` 字段对齐。
     #[serde(default = "default_external_controller")]
     pub external_controller: String,
 
@@ -77,8 +78,32 @@ pub struct ClashApiConfig {
     pub secret: String,
 
     /// 静态 Web UI 目录；为空则不提供 UI 文件。
+    /// 与 sing-box `external_ui` 字段对齐。
     #[serde(default)]
     pub external_ui: Option<String>,
+
+    /// Web UI 自动下载 URL（zip 格式）。
+    /// 与 sing-box `external_ui_download_url` 字段对齐。
+    /// 不填时默认使用 metacubexd GitHub Releases 最新 zip。
+    /// 当 `external_ui` 目录不存在或为空时，启动时自动下载并解压。
+    #[serde(default)]
+    pub external_ui_download_url: Option<String>,
+
+    /// 下载 UI 时使用的出站 tag（选填）。
+    /// 与 sing-box `external_ui_download_detour` 字段对齐。
+    #[serde(default)]
+    pub external_ui_download_detour: Option<String>,
+
+    /// CORS 允许的来源列表，如 `["http://localhost:3000", "*"]`。
+    /// 与 sing-box `access_control_allow_origin` 字段对齐。
+    /// 不填时默认允许所有来源（`*`）。
+    #[serde(default)]
+    pub access_control_allow_origin: Vec<String>,
+
+    /// 是否允许私有网络访问（浏览器私有网络访问 CORS 头）。
+    /// 与 sing-box `access_control_allow_private_network` 字段对齐。
+    #[serde(default)]
+    pub access_control_allow_private_network: bool,
 }
 
 impl Default for ClashApiConfig {
@@ -90,6 +115,10 @@ impl Default for ClashApiConfig {
             external_controller: default_external_controller(),
             secret: String::new(),
             external_ui: None,
+            external_ui_download_url: None,
+            external_ui_download_detour: None,
+            access_control_allow_origin: vec![],
+            access_control_allow_private_network: false,
         }
     }
 }

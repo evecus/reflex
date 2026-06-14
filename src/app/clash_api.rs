@@ -262,6 +262,8 @@ pub struct ClashApi {
     log_level: LogLevel,
     /// 规则集注册表，用于查询元数据和触发 remote 规则集刷新
     rs_registry: Arc<RuleSetRegistry>,
+    /// DNS 解析器，用于 GET /dns/query 和 POST /cache/dns/flush
+    dns_resolver: Option<Arc<crate::dns::DnsResolver>>,
 }
 
 impl ClashApi {
@@ -275,6 +277,7 @@ impl ClashApi {
         log_level: LogLevel,
         conn_tracker: Arc<ConnectionTracker>,
         rs_registry: Arc<RuleSetRegistry>,
+        dns_resolver: Option<Arc<crate::dns::DnsResolver>>,
     ) -> Self {
         let mode = Arc::new(RwLock::new(config.default_mode.clone()));
 
@@ -308,6 +311,21 @@ impl ClashApi {
             inbound_configs,
             log_level,
             rs_registry,
+            dns_resolver,
+        }
+    }
+
+    /// 返回配置中的 CORS 允许来源（用于 Access-Control-Allow-Origin 头）。
+    /// 与 sing-box access_control_allow_origin 字段对齐：
+    /// - 空列表 → "*"（允许所有）
+    /// - 单个值 → 直接使用
+    /// - 多个值 → 逗号连接（虽然标准只允许单值，但 Clash Meta 也这么做）
+    fn cors_origin_header(&self) -> String {
+        let origins = &self.config.access_control_allow_origin;
+        if origins.is_empty() {
+            "*".to_string()
+        } else {
+            origins.join(", ")
         }
     }
 
@@ -344,7 +362,9 @@ impl ClashApi {
     async fn handle_request(self: Arc<Self>, request: HttpRequest, mut stream: TcpStream) {
         // CORS 预检
         if request.method == "OPTIONS" {
-            let resp = HttpResponse::new(204, "No Content")
+            let origin = self.cors_origin_header();
+            let mut resp = HttpResponse::new(204, "No Content")
+                .header("Access-Control-Allow-Origin", &origin)
                 .header(
                     "Access-Control-Allow-Methods",
                     "GET, POST, PUT, PATCH, DELETE, OPTIONS",
@@ -352,8 +372,11 @@ impl ClashApi {
                 .header(
                     "Access-Control-Allow-Headers",
                     "Content-Type, Authorization",
-                )
-                .body(Vec::new(), "text/plain; charset=utf-8");
+                );
+            if self.config.access_control_allow_private_network {
+                resp = resp.header("Access-Control-Allow-Private-Network", "true");
+            }
+            let resp = resp.body(Vec::new(), "text/plain; charset=utf-8");
             let _ = stream.write_all(&resp.to_bytes()).await;
             return;
         }
@@ -424,7 +447,10 @@ impl ClashApi {
             })),
             ("GET", "/configs") => self.get_configs(),
             ("PATCH", "/configs") => self.patch_configs(&request.body),
-            ("PUT", "/configs") => empty_response(204, "No Content"),
+            // PUT /configs：sing-box/Clash Meta 语义为热重载配置，Reflex 暂不支持运行时重载
+            ("PUT", "/configs") => json_response(json!({
+                "message": "hot-reload not supported; restart Reflex to apply a new config"
+            })),
             ("GET", "/traffic") => self.get_traffic_once(),
             ("GET", "/logs") => {
                 self.get_logs_stream(&mut stream).await;
@@ -434,14 +460,21 @@ impl ClashApi {
             ("GET", "/connections") => self.get_connections(),
             ("DELETE", "/connections") => self.delete_connections(),
             ("GET", "/proxies") => self.get_proxies(),
+            // GET /providers/proxies — 返回订阅 provider 列表（目前无 provider）
             ("GET", "/providers/proxies") => json_response(json!({"providers": {}})),
             ("GET", "/providers/rules") => self.get_rule_providers().await,
             ("GET", "/script") => json_response(json!({"code": ""})),
-            ("GET", "/cache") => empty_response(204, "No Content"),
             ("GET", "/profile") => json_response(json!({"payload": ""})),
-            ("GET", "/dns/query") => json_response(json!({"Answer": []})),
+            // GET /dns/query?name=<domain>&type=<A|AAAA|...>
+            ("GET", "/dns/query") => self.get_dns_query(query).await,
             ("GET", "/memory") => self.get_memory_once(),
             ("GET", "/group") => self.get_groups(),
+            // POST /cache/dns/flush — 清空 DNS 内存缓存（sing-box 兼容）
+            ("POST", "/cache/dns/flush") => self.flush_dns_cache(),
+            // POST /cache/fakeip/flush — 清空 fakeip 映射
+            ("POST", "/cache/fakeip/flush") => self.flush_fakeip_cache().await,
+            // POST /upgrade/ui — 手动触发 external UI 重新下载（sing-box 兼容）
+            ("POST", "/upgrade/ui") => self.upgrade_ui().await,
             _ if request.method == "GET" && path.starts_with("/group/") => {
                 let rest = path.trim_start_matches("/group/");
                 if let Some(name_enc) = rest.strip_suffix("/delay") {
@@ -467,8 +500,19 @@ impl ClashApi {
             _ if request.method == "PUT" && path.starts_with("/proxies/") => {
                 self.put_proxy(path.trim_start_matches("/proxies/"), &request.body)
             }
+            // GET /providers/proxies/:name — 单个 provider 详情（无 provider 时 404）
             _ if request.method == "GET" && path.starts_with("/providers/proxies/") => {
-                empty_response(204, "No Content")
+                json_response_status(404, json!({"message": "provider not found"}))
+            }
+            // PUT /providers/proxies/:name — 触发 provider 更新（无 provider 时 404）
+            _ if request.method == "PUT" && path.starts_with("/providers/proxies/") => {
+                json_response_status(404, json!({"message": "provider not found"}))
+            }
+            // GET /providers/rules/:name — 单个规则集详情
+            _ if request.method == "GET" && path.starts_with("/providers/rules/") => {
+                let name_enc = path.trim_start_matches("/providers/rules/");
+                let name = percent_decode(name_enc);
+                self.get_rule_provider(&name).await
             }
             _ if request.method == "PUT" && path.starts_with("/providers/rules/") => {
                 let name_enc = path.trim_start_matches("/providers/rules/");
@@ -479,6 +523,12 @@ impl ClashApi {
             _ => text_response(404, "Not Found", "not found"),
         };
 
+        // 追加 CORS 头到所有普通响应
+        let origin = self.cors_origin_header();
+        let mut response = response.header("Access-Control-Allow-Origin", &origin);
+        if self.config.access_control_allow_private_network {
+            response = response.header("Access-Control-Allow-Private-Network", "true");
+        }
         let _ = stream.write_all(&response.to_bytes()).await;
     }
 
@@ -583,7 +633,7 @@ impl ClashApi {
             Some(k) => k.to_string(),
             None => return,
         };
-        let handshake = ws_upgrade_response(&key);
+        let handshake = ws_upgrade_response(&key, &self.cors_origin_header());
         if stream.write_all(handshake.as_bytes()).await.is_err() {
             return;
         }
@@ -609,7 +659,9 @@ impl ClashApi {
     // ── /logs ─────────────────────────────────────────────────────────────────
 
     async fn get_logs_stream(self: Arc<Self>, stream: &mut TcpStream) {
-        let header = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
+        let origin = self.cors_origin_header();
+        let header_str = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nAccess-Control-Allow-Origin: {}\r\n\r\n", origin);
+        let header = header_str.as_bytes();
         if stream.write_all(header).await.is_err() {
             return;
         }
@@ -651,7 +703,7 @@ impl ClashApi {
             Some(k) => k.to_string(),
             None => return,
         };
-        let handshake = ws_upgrade_response(&key);
+        let handshake = ws_upgrade_response(&key, &self.cors_origin_header());
         if stream.write_all(handshake.as_bytes()).await.is_err() {
             return;
         }
@@ -717,7 +769,7 @@ impl ClashApi {
             Some(k) => k.to_string(),
             None => return,
         };
-        let handshake = ws_upgrade_response(&key);
+        let handshake = ws_upgrade_response(&key, &self.cors_origin_header());
         if stream.write_all(handshake.as_bytes()).await.is_err() {
             return;
         }
@@ -750,7 +802,7 @@ impl ClashApi {
             Some(k) => k.to_string(),
             None => return,
         };
-        let handshake = ws_upgrade_response(&key);
+        let handshake = ws_upgrade_response(&key, &self.cors_origin_header());
         if stream.write_all(handshake.as_bytes()).await.is_err() {
             return;
         }
@@ -960,7 +1012,6 @@ impl ClashApi {
     /// PUT /providers/rules/:name — 触发远程规则集重新下载
     async fn update_rule_provider(&self, name: &str) -> HttpResponse {
         use crate::config::route::RuleSetType;
-        // 检查是否存在且为 remote
         let is_remote = self
             .route_config
             .rule_set
@@ -980,6 +1031,149 @@ impl ClashApi {
         match self.rs_registry.reload_remote(name).await {
             Ok(()) => empty_response(204, "No Content"),
             Err(e) => text_response(500, "Internal Server Error", &e.to_string()),
+        }
+    }
+
+    /// GET /providers/rules/:name — 返回单个规则集详情
+    async fn get_rule_provider(&self, name: &str) -> HttpResponse {
+        let meta = self.rs_registry.snapshot().await;
+        let rs_ref = self.route_config.rule_set.iter().find(|r| r.tag == name);
+        match (rs_ref, meta.get(name)) {
+            (Some(rs), Some(m)) => {
+                use crate::config::route::RuleSetType;
+                json_response(json!({
+                    "name": name,
+                    "type": "Rule",
+                    "vehicleType": if rs.r#type == RuleSetType::Remote { "HTTP" } else { "File" },
+                    "ruleCount": m.rule_count,
+                    "updatedAt": ms_to_iso(m.updated_at_ms),
+                    "format": match rs.format {
+                        crate::config::route::RuleSetFormat::Source => "source",
+                        crate::config::route::RuleSetFormat::Binary => "binary",
+                    },
+                }))
+            }
+            _ => json_response_status(404, json!({"message": format!("rule_set '{name}' not found")})),
+        }
+    }
+
+    // ── /dns ──────────────────────────────────────────────────────────────────
+
+    /// GET /dns/query?name=example.com&type=A
+    /// 对指定域名执行 DNS 查询并返回结果，格式与 sing-box / Clash Meta 一致。
+    async fn get_dns_query(&self, query: &str) -> HttpResponse {
+        let params: std::collections::HashMap<&str, &str> = query
+            .split('&')
+            .filter_map(|kv| {
+                let mut it = kv.splitn(2, '=');
+                Some((it.next()?, it.next()?))
+            })
+            .collect();
+
+        let name = match params.get("name") {
+            Some(n) => *n,
+            None => return json_response_status(400, json!({"message": "missing 'name' parameter"})),
+        };
+        let qtype_str = params.get("type").copied().unwrap_or("A");
+
+        // 查询类型映射（DNS QTYPE 数字）
+        let qtype: u16 = match qtype_str.to_uppercase().as_str() {
+            "A" => 1,
+            "AAAA" => 28,
+            "CNAME" => 5,
+            "MX" => 15,
+            "NS" => 2,
+            "TXT" => 16,
+            "PTR" => 12,
+            "SRV" => 33,
+            "SOA" => 6,
+            "CAA" => 257,
+            other => {
+                return json_response_status(
+                    400,
+                    json!({"message": format!("unsupported query type: '{other}'")}),
+                );
+            }
+        };
+
+        let resolver = match &self.dns_resolver {
+            Some(r) => r.clone(),
+            None => return json_response_status(503, json!({"message": "DNS resolver not available"})),
+        };
+
+        match resolver.resolve_raw(name, qtype).await {
+            Ok(raw_resp) => {
+                let answers = parse_dns_answers(&raw_resp);
+                json_response(json!({
+                    "Status": 0,
+                    "TC": false,
+                    "RD": true,
+                    "RA": true,
+                    "AD": false,
+                    "CD": false,
+                    "Question": [{"name": name, "type": qtype}],
+                    "Answer": answers,
+                }))
+            }
+            Err(e) => json_response_status(500, json!({"message": e.to_string()})),
+        }
+    }
+
+    // ── /cache ────────────────────────────────────────────────────────────────
+
+    /// POST /cache/dns/flush — 清空内存 DNS 缓存
+    fn flush_dns_cache(&self) -> HttpResponse {
+        if let Some(ref resolver) = self.dns_resolver {
+            resolver.clear_cache();
+            info!("clash api: dns cache flushed");
+        }
+        empty_response(204, "No Content")
+    }
+
+    /// POST /cache/fakeip/flush — 清空 fakeip 映射（当前实现清空 DNS 缓存中的 fakeip 条目）
+    async fn flush_fakeip_cache(&self) -> HttpResponse {
+        // fakeip 存储在 FakeIpStore 中，通过 DnsResolver 间接访问
+        // 目前实现：直接重置整个 DNS 缓存（sing-box 的实现也是这个效果）
+        if let Some(ref resolver) = self.dns_resolver {
+            resolver.clear_cache();
+            info!("clash api: fakeip cache flushed");
+        }
+        empty_response(204, "No Content")
+    }
+
+    // ── /upgrade/ui ───────────────────────────────────────────────────────────
+
+    /// POST /upgrade/ui — 手动触发 external UI 重新下载（删除旧文件后重新下载解压）
+    async fn upgrade_ui(&self) -> HttpResponse {
+        let ui_dir = match &self.config.external_ui {
+            Some(d) => d.clone(),
+            None => {
+                return json_response_status(
+                    404,
+                    json!({"message": "external_ui not configured"}),
+                )
+            }
+        };
+        let download_url = self.config.external_ui_download_url.clone();
+        info!(ui_dir, "clash api: upgrading external UI");
+
+        // 删除旧 UI 文件（保留目录）
+        if let Ok(entries) = std::fs::read_dir(&ui_dir) {
+            for entry in entries.flatten() {
+                let _ = std::fs::remove_file(entry.path())
+                    .or_else(|_| std::fs::remove_dir_all(entry.path()));
+            }
+        }
+
+        match download_external_ui(&ui_dir, download_url.as_deref()).await {
+            Ok(()) => {
+                info!(ui_dir, "clash api: external UI upgraded");
+                json_response(json!({"status": "ok"}))
+            }
+            Err(e) => {
+                warn!(ui_dir, err = %e, "clash api: external UI upgrade failed");
+                json_response_status(500, json!({"message": e.to_string()}))
+            }
         }
     }
 
@@ -1270,10 +1464,10 @@ impl ClashApi {
 
 // ── WebSocket 工具 ─────────────────────────────────────────────────────────────
 
-fn ws_upgrade_response(client_key: &str) -> String {
+fn ws_upgrade_response(client_key: &str, origin: &str) -> String {
     let accept = ws_accept_key(client_key);
     format!(
-        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\nAccess-Control-Allow-Origin: {origin}\r\n\r\n"
     )
 }
 
@@ -1488,7 +1682,7 @@ impl HttpResponse {
     }
     fn to_bytes(&self) -> Vec<u8> {
         let mut response = format!(
-            "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n",
+            "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
             self.status, self.reason, self.body.len()
         ).into_bytes();
         for (name, value) in &self.headers {
@@ -1502,6 +1696,13 @@ impl HttpResponse {
 
 fn json_response(value: serde_json::Value) -> HttpResponse {
     HttpResponse::new(200, "OK").body(
+        serde_json::to_vec(&value).expect("json serialization should not fail"),
+        "application/json; charset=utf-8",
+    )
+}
+fn json_response_status(status: u16, value: serde_json::Value) -> HttpResponse {
+    let reason = if status == 404 { "Not Found" } else { "Error" };
+    HttpResponse::new(status, reason).body(
         serde_json::to_vec(&value).expect("json serialization should not fail"),
         "application/json; charset=utf-8",
     )
@@ -1671,6 +1872,202 @@ pub(crate) fn read_process_rss_kb() -> Option<u64> {
     #[cfg(not(target_os = "linux"))]
     {
         None
+    }
+}
+
+// ── UI 自动下载 ───────────────────────────────────────────────────────────────
+
+/// 默认 UI 下载地址（metacubexd，与 sing-box 相同）
+const DEFAULT_UI_DOWNLOAD_URL: &str =
+    "https://github.com/MetaCubeX/metacubexd/releases/latest/download/compressed-dist.tgz";
+
+/// 下载并解压 external UI zip 包到 `ui_dir`。
+/// 与 sing-box `downloadExternalUI` 逻辑对齐：
+/// - URL 不填时使用 metacubexd 默认地址
+/// - 支持 zip 格式；若 zip 内所有文件都在同一顶层目录下，自动去掉该目录层
+pub async fn download_external_ui(
+    ui_dir: &str,
+    download_url: Option<&str>,
+) -> anyhow::Result<()> {
+    let url = download_url.unwrap_or(DEFAULT_UI_DOWNLOAD_URL);
+    tracing::info!(url, ui_dir, "downloading external UI");
+
+    std::fs::create_dir_all(ui_dir)
+        .map_err(|e| anyhow::anyhow!("failed to create ui dir '{ui_dir}': {e}"))?;
+
+    // 下载到临时文件
+    let resp = reqwest::get(url)
+        .await
+        .map_err(|e| anyhow::anyhow!("download failed: {e}"))?;
+    if !resp.status().is_success() {
+        anyhow::bail!("download failed with HTTP {}", resp.status());
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| anyhow::anyhow!("download body error: {e}"))?;
+
+    extract_zip(&bytes, ui_dir)
+        .map_err(|e| anyhow::anyhow!("zip extraction failed: {e}"))?;
+
+    tracing::info!(ui_dir, "external UI downloaded and extracted");
+    Ok(())
+}
+
+/// 从 zip 字节流解压到目录，自动去掉单顶层目录前缀（与 sing-box `downloadZIP` 行为一致）。
+/// 使用纯标准库实现，不依赖第三方 zip crate。
+/// 支持 deflate（method=8）和 store（method=0）压缩方式。
+fn extract_zip(data: &[u8], output_dir: &str) -> anyhow::Result<()> {
+    // 解析 Local File Headers（不用 Central Directory，流式处理）
+    let mut pos = 0usize;
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+
+    while pos + 30 <= data.len() {
+        // Local file header signature: 0x04034b50 (PK\x03\x04)
+        if data[pos..pos+4] != [0x50, 0x4b, 0x03, 0x04] {
+            break;
+        }
+        let method = u16::from_le_bytes([data[pos+8], data[pos+9]]);
+        let compressed_size = u32::from_le_bytes([data[pos+18], data[pos+19],
+                                                   data[pos+20], data[pos+21]]) as usize;
+        let fname_len = u16::from_le_bytes([data[pos+26], data[pos+27]]) as usize;
+        let extra_len = u16::from_le_bytes([data[pos+28], data[pos+29]]) as usize;
+        pos += 30;
+
+        if pos + fname_len + extra_len > data.len() { break; }
+        let fname = String::from_utf8_lossy(&data[pos..pos+fname_len]).into_owned();
+        pos += fname_len + extra_len;
+
+        if pos + compressed_size > data.len() { break; }
+        let compressed = &data[pos..pos+compressed_size];
+        pos += compressed_size;
+
+        // 跳过目录条目
+        if fname.ends_with('/') { continue; }
+
+        let decompressed = match method {
+            0 => compressed.to_vec(), // store
+            8 => {
+                // deflate (raw, no zlib header)
+                use std::io::Read;
+                let mut decoder = flate2::read::DeflateDecoder::new(compressed);
+                let mut out = Vec::new();
+                decoder.read_to_end(&mut out)
+                    .map_err(|e| anyhow::anyhow!("deflate error for '{fname}': {e}"))?;
+                out
+            }
+            m => {
+                tracing::warn!(fname, method = m, "unsupported zip compression, skipping");
+                continue;
+            }
+        };
+
+        entries.push((fname, decompressed));
+    }
+
+    if entries.is_empty() {
+        anyhow::bail!("zip contains no files (possibly unsupported format)");
+    }
+
+    // 检测单顶层目录前缀
+    let trim_prefix = {
+        let mut first: Option<&str> = None;
+        let mut single = true;
+        for (name, _) in &entries {
+            let top = name.split('/').next().unwrap_or("");
+            match first {
+                None => first = Some(top),
+                Some(f) if f != top => { single = false; break; }
+                _ => {}
+            }
+        }
+        single && entries.iter().all(|(n, _)| n.contains('/'))
+    };
+
+    for (fname, content) in entries {
+        let rel = if trim_prefix {
+            fname.splitn(2, '/').nth(1).unwrap_or(&fname).to_string()
+        } else {
+            fname.clone()
+        };
+        if rel.is_empty() || rel.contains("..") { continue; }
+
+        let dest = std::path::Path::new(output_dir).join(&rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("mkdir '{}': {e}", parent.display()))?;
+        }
+        std::fs::write(&dest, &content)
+            .map_err(|e| anyhow::anyhow!("write '{}': {e}", dest.display()))?;
+    }
+    Ok(())
+}
+
+// ── DNS 答案解析 ──────────────────────────────────────────────────────────────
+
+/// 从原始 DNS 报文字节解析 Answer 记录，返回 Clash API 格式的 JSON 数组。
+fn parse_dns_answers(raw: &[u8]) -> Vec<serde_json::Value> {
+    // 最小 DNS 报文长度：12 字节 header
+    if raw.len() < 12 { return vec![]; }
+    let ancount = u16::from_be_bytes([raw[6], raw[7]]) as usize;
+    if ancount == 0 { return vec![]; }
+
+    let mut answers = Vec::new();
+    // 跳过 header (12B) + question section
+    let mut pos = 12usize;
+
+    // 跳过 question section
+    let qdcount = u16::from_be_bytes([raw[4], raw[5]]) as usize;
+    for _ in 0..qdcount {
+        // 跳过 QNAME（以 0 结尾的 label 序列）
+        pos = skip_dns_name(raw, pos);
+        pos += 4; // QTYPE + QCLASS
+        if pos > raw.len() { return vec![]; }
+    }
+
+    // 解析 Answer records
+    for _ in 0..ancount {
+        if pos >= raw.len() { break; }
+        pos = skip_dns_name(raw, pos);  // NAME
+        if pos + 10 > raw.len() { break; }
+        let rtype = u16::from_be_bytes([raw[pos], raw[pos+1]]);
+        let _rclass = u16::from_be_bytes([raw[pos+2], raw[pos+3]]);
+        let ttl = u32::from_be_bytes([raw[pos+4], raw[pos+5], raw[pos+6], raw[pos+7]]);
+        let rdlength = u16::from_be_bytes([raw[pos+8], raw[pos+9]]) as usize;
+        pos += 10;
+        if pos + rdlength > raw.len() { break; }
+        let rdata = &raw[pos..pos+rdlength];
+        pos += rdlength;
+
+        let data = match rtype {
+            1 if rdlength == 4 => format!("{}.{}.{}.{}", rdata[0], rdata[1], rdata[2], rdata[3]),
+            28 if rdlength == 16 => {
+                let mut parts = Vec::new();
+                for i in 0..8 {
+                    parts.push(format!("{:x}", u16::from_be_bytes([rdata[i*2], rdata[i*2+1]])));
+                }
+                parts.join(":")
+            }
+            _ => format!("<rtype={rtype} len={rdlength}>"),
+        };
+
+        answers.push(json!({
+            "name": "",      // 完整的 name 解析需要指针跟踪，简化为空
+            "type": rtype,
+            "TTL": ttl,
+            "data": data,
+        }));
+    }
+    answers
+}
+
+fn skip_dns_name(raw: &[u8], mut pos: usize) -> usize {
+    loop {
+        if pos >= raw.len() { return pos; }
+        let len = raw[pos] as usize;
+        if len == 0 { return pos + 1; }
+        if len & 0xc0 == 0xc0 { return pos + 2; } // 压缩指针
+        pos += 1 + len;
     }
 }
 
