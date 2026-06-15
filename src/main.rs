@@ -97,17 +97,38 @@ fn cmd_inspect(args: &[String]) -> anyhow::Result<()> {
     let data = fs::read(path)?;
     let loaded = LoadedRuleSet::from_bytes(&data)?;
 
+    // v2 格式下精确域名/域名后缀存储为 FST 字节（domain_fst / domain_suffix_fst），
+    // 而不是 v1 的 Vec<String>（domains / domain_suffixes）。两者互斥，
+    // 这里分别统计并相加，避免 v2 文件被误报为 0 条目。
+    let domain_fst_count = if loaded.domain_fst.is_empty() {
+        0
+    } else {
+        fst::Set::new(loaded.domain_fst.clone())
+            .map(|s| s.len())
+            .unwrap_or(0)
+    };
+    let domain_suffix_fst_count = if loaded.domain_suffix_fst.is_empty() {
+        0
+    } else {
+        fst::Set::new(loaded.domain_suffix_fst.clone())
+            .map(|s| s.len())
+            .unwrap_or(0)
+    };
+
+    let domain_count = loaded.domains.len() + domain_fst_count;
+    let domain_suffix_count = loaded.domain_suffixes.len() + domain_suffix_fst_count;
+
     println!("file:            {}", path);
-    println!("domains:         {}", loaded.domains.len());
-    println!("domain-suffixes: {}", loaded.domain_suffixes.len());
+    println!("domains:         {}", domain_count);
+    println!("domain-suffixes: {}", domain_suffix_count);
     println!("domain-keywords: {}", loaded.domain_keywords.len());
     println!("domain-regexes:  {}", loaded.domain_regexes.len());
     println!("ipv4-cidrs:      {}", loaded.ipv4_cidrs.len());
     println!("ipv6-cidrs:      {}", loaded.ipv6_cidrs.len());
     println!("ports:           {}", loaded.ports.len());
 
-    let total = loaded.domains.len()
-        + loaded.domain_suffixes.len()
+    let total = domain_count
+        + domain_suffix_count
         + loaded.domain_keywords.len()
         + loaded.domain_regexes.len()
         + loaded.ipv4_cidrs.len()
