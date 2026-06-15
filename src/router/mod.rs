@@ -646,19 +646,47 @@ impl CompiledRule {
             }
         }
 
-        // 5. 目标条件（所有地址类条件之间是 OR），结果受 invert 影响
-        //    - ruleset / ip_cidr / domain* / domain_regex / port  →  match_target()
-        //    - private_ip                                          →  is_private_ip()
-        let has_addr_rules = !self.rulesets.is_empty()
-            || self.addr_rs.is_some()
-            || self.port_rs.is_some()
-            || !self.domain_regex.is_empty();
+        // 5. 目标条件：与 sing-box 对齐，规则内**不同类型**的地址条件之间是 AND
+        //    （只有同一字段内的多个取值之间才是 OR，例如 ruleset 列表内部、
+        //    domain_regex 列表内部）。结果受 invert 影响。
+        //    条件类别：
+        //    - ruleset（rule_set 字段，内部按 domain/ip/port 任一命中即算该类命中）
+        //    - 内联 domain* / ip_cidr（addr_rs）
+        //    - 内联 port / port_range（port_rs）
+        //    - domain_regex
+        //    - private_ip（is_private_ip）
+        //    每一类"未配置"时自动视为满足（不参与 AND），只有"已配置"的类别
+        //    才必须命中。若一类都没配置，则视为"无目标条件"。
+        let has_ruleset = !self.rulesets.is_empty();
+        let has_addr_rs = self.addr_rs.is_some();
+        let has_port_rs = self.port_rs.is_some();
+        let has_domain_regex = !self.domain_regex.is_empty();
+        let has_private_ip = self.private_ip;
 
-        if has_addr_rules || self.private_ip {
-            let addr_hit = has_addr_rules && self.match_target(target);
-            let private_hit = self.private_ip
-                && matches!(target, Target::Socket(addr) if is_private_ip(addr.ip()));
-            let matched = addr_hit || private_hit;
+        let has_addr_rules = has_ruleset || has_addr_rs || has_port_rs || has_domain_regex;
+
+        if has_addr_rules || has_private_ip {
+            let addr_mt = target_to_addr_match(target);
+            let port_val = target.port();
+
+            let ruleset_ok = !has_ruleset || self.match_rulesets(&addr_mt, port_val);
+            let addr_rs_ok = !has_addr_rs
+                || self
+                    .addr_rs
+                    .as_ref()
+                    .is_some_and(|rs| rs.matches(&addr_mt));
+            let port_rs_ok = !has_port_rs
+                || self
+                    .port_rs
+                    .as_ref()
+                    .is_some_and(|rs| rs.matches(&MatchTarget::Port(port_val)));
+            let domain_regex_ok = !has_domain_regex || self.match_domain_regex(target);
+            let private_ip_ok = !has_private_ip
+                || matches!(target, Target::Socket(addr) if is_private_ip(addr.ip()));
+
+            let matched =
+                ruleset_ok && addr_rs_ok && port_rs_ok && domain_regex_ok && private_ip_ok;
+
             // 应用 invert
             if self.invert {
                 if matched {
@@ -677,49 +705,34 @@ impl CompiledRule {
         true
     }
 
-    fn match_target(&self, target: &Target) -> bool {
-        let addr_mt = target_to_addr_match(target);
-        let port_val = target.port();
-
-        // ruleset 匹配（OR）
+    /// ruleset 列表匹配：列表内多个 tag 之间是 OR；单个 ruleset 内部
+    /// domain/ip 与 port 条目之间也按 OR 处理（任一命中即算该 ruleset 命中）。
+    fn match_rulesets(&self, addr_mt: &MatchTarget<'_>, port_val: u16) -> bool {
         for rs in &self.rulesets {
-            if rs.matches(&addr_mt) {
+            if rs.matches(addr_mt) {
                 return true;
             }
             if rs.matches(&MatchTarget::Port(port_val)) {
                 return true;
             }
         }
+        false
+    }
 
-        // 内联地址规则（OR）
-        if let Some(rs) = &self.addr_rs {
-            if rs.matches(&addr_mt) {
-                return true;
-            }
-        }
-
-        // 端口规则（OR）
-        if let Some(rs) = &self.port_rs {
-            if rs.matches(&MatchTarget::Port(port_val)) {
-                return true;
-            }
-        }
-
-        // domain_regex 匹配（OR，大小写不敏感）
-        if !self.domain_regex.is_empty() {
-            let domain = match target {
-                Target::Domain(h, _) => Some(h.as_str()),
-                Target::Socket(_) => None,
-            };
-            if let Some(host) = domain {
-                for re in &self.domain_regex {
-                    if re.is_match(host) {
-                        return true;
-                    }
+    /// domain_regex 列表匹配（大小写不敏感），列表内多个正则之间是 OR。
+    /// 对非域名目标（纯 IP）始终返回 false。
+    fn match_domain_regex(&self, target: &Target) -> bool {
+        let domain = match target {
+            Target::Domain(h, _) => Some(h.as_str()),
+            Target::Socket(_) => None,
+        };
+        if let Some(host) = domain {
+            for re in &self.domain_regex {
+                if re.is_match(host) {
+                    return true;
                 }
             }
         }
-
         false
     }
 }
