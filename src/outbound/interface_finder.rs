@@ -225,3 +225,14 @@ pub fn auto_bind_interface_for_target(fd: std::os::unix::io::RawFd, target: std:
     #[cfg(target_os = "linux")]
     linux::auto_bind_interface(fd, target);
 }
+
+/// 将 socket 绑定到指定网卡名称（仅 Linux 生效）。
+///
+/// 非 Linux 平台为空操作。
+#[allow(unused_variables)]
+pub fn bind_to_interface(fd: std::os::unix::io::RawFd, iface_name: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    return linux::bind_to_interface(fd, iface_name);
+    #[cfg(not(target_os = "linux"))]
+    Ok(())
+}
