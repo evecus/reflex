@@ -1,9 +1,4 @@
 {
-  // 全局配置
-  "global": {
-    "routing_mark": 1789,
-    "ipv6": true
-  },
   // DNS 配置
   "dns": {
     "servers": [
@@ -303,6 +298,8 @@
     //   启用后，direct 出站会跟随系统路由表自动选择接口，解决多网卡/VPN 环境下
     //   直连流量走错接口的问题。与 sing-box `route.auto_detect_interface` 对齐。
     "auto_detect_interface": true,
+    "ipv6": true,
+    "default_mark": 1789,
     //
     // default_interface：强制指定出口接口名称（覆盖 auto_detect_interface）。
     //   填写后所有 direct 连接绑定到该接口。不填时依赖自动检测或系统默认。
