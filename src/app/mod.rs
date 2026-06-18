@@ -24,7 +24,7 @@ use crate::{
 
 use clash_api::ClashApi;
 use dispatcher::Dispatcher;
-use outbound_mgr::OutboundManager;
+use outbound_mgr::{OutboundManager, OutboundManagerConfig};
 use ruleset_registry::RuleSetRegistry;
 use stats::Stats;
 
@@ -148,13 +148,15 @@ impl App {
         // ── 4. 出站注册表（注入 DNS resolver 和 ProviderManager）────────────
         let outbound_mgr = Arc::new(OutboundManager::from_config_full(
             &config.outbounds,
-            Some(dns_resolver.clone()),
-            cache_writer.clone(),
-            cache_reader.clone(),
-            provider_manager.clone(),
-            config.route.default_mark.unwrap_or(0),
-            config.route.auto_detect_interface,
-            config.route.default_interface.clone(),
+            OutboundManagerConfig {
+                resolver: Some(dns_resolver.clone()),
+                cache_writer: cache_writer.clone(),
+                cache_reader: cache_reader.clone(),
+                provider_manager: provider_manager.clone(),
+                routing_mark: config.route.default_mark.unwrap_or(0),
+                auto_detect_interface: config.route.auto_detect_interface,
+                default_interface: config.route.default_interface.clone(),
+            },
         )?);
         info!(
             "outbound manager: {} outbounds registered",
