@@ -14,6 +14,17 @@ use crate::{
     provider::ProviderManager,
 };
 
+/// `OutboundManager::from_config_full` 的参数包，避免参数过多。
+pub struct OutboundManagerConfig {
+    pub resolver: Option<Arc<DnsResolver>>,
+    pub cache_writer: Option<Arc<CacheFile>>,
+    pub cache_reader: Option<Arc<CacheFileReader>>,
+    pub provider_manager: Option<Arc<ProviderManager>>,
+    pub routing_mark: u32,
+    pub auto_detect_interface: bool,
+    pub default_interface: Option<String>,
+}
+
 pub struct OutboundManager {
     map: HashMap<String, Arc<dyn Outbound>>,
 }
@@ -27,20 +38,31 @@ impl OutboundManager {
         configs: &[OutboundConfig],
         resolver: Option<Arc<DnsResolver>>,
     ) -> anyhow::Result<Self> {
-        Self::from_config_full(configs, resolver, None, None, None, 0, false, None)
+        Self::from_config_full(configs, OutboundManagerConfig {
+            resolver,
+            cache_writer: None,
+            cache_reader: None,
+            provider_manager: None,
+            routing_mark: 0,
+            auto_detect_interface: false,
+            default_interface: None,
+        })
     }
 
     /// 完整构造函数，支持 CacheFile 持久化和 ProviderManager。
     pub fn from_config_full(
         configs: &[OutboundConfig],
-        resolver: Option<Arc<DnsResolver>>,
-        cache_writer: Option<Arc<CacheFile>>,
-        cache_reader: Option<Arc<CacheFileReader>>,
-        provider_manager: Option<Arc<ProviderManager>>,
-        routing_mark: u32,
-        auto_detect_interface: bool,
-        default_interface: Option<String>,
+        cfg: OutboundManagerConfig,
     ) -> anyhow::Result<Self> {
+        let OutboundManagerConfig {
+            resolver,
+            cache_writer,
+            cache_reader,
+            provider_manager,
+            routing_mark,
+            auto_detect_interface,
+            default_interface,
+        } = cfg;
         let registry: OutboundRegistry = Arc::new(std::sync::OnceLock::new());
         let mut map: HashMap<String, Arc<dyn Outbound>> = HashMap::new();
 
