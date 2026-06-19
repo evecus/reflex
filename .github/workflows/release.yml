@@ -67,11 +67,14 @@ jobs:
           tool: cross
 
       - name: Inject version into Cargo.toml
+        shell: bash
         run: |
           VERSION="${{ github.event.inputs.version }}"
-          sed -i "s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml
+          VERSION="${VERSION#v}"
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" Cargo.toml
 
       - name: Update Cargo.lock to match new version
+        shell: bash
         run: cargo update --workspace
 
       - name: Build reflex (Linux x86_64, native musl)
