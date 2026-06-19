@@ -229,24 +229,67 @@ fn create_tproxy_udp_socket(addr: SocketAddr) -> anyhow::Result<std::net::UdpSoc
     sock.set_ip_transparent(true)?;
     sock.set_nonblocking(true)?;
 
+    // 关键修复：监听地址为 "::"（双栈）时，内核会同时接收原生 IPv6 流量
+    // 和经 IPv4-mapped 地址（::ffff:a.b.c.d）进入的 IPv4 流量。
+    // 这两类流量在 recvmsg 时分别需要 IPV6_RECVORIGDSTADDR 和
+    // IP_RECVORIGDSTADDR 才能拿到 TPROXY 的原始目标地址 cmsg；
+    // 二者并非互斥关系，必须都设置，否则双栈 socket 收到的 IPv4-mapped
+    // 流量会因为只开了 v6 选项而拿不到 cmsg，导致 recvmsg 报
+    // "no original dst in cmsg" 并被丢弃（IPv4 UDP 流量——例如绝大多数
+    // 游戏的 UDP 对战流量——会因此完全无法建立 tproxy 会话）。
+    //
+    // 对纯 IPv4-only socket（listen 配置了具体的 IPv4 地址而非 "::"/"0.0.0.0"
+    // 双栈地址），设置 IPV6_RECVORIGDSTADDR 会因为协议族不对而失败，这里忽略
+    // 该 setsockopt 的返回值即可，不影响 IPv4 选项的生效。
     unsafe {
         let one: libc::c_int = 1;
-        if addr.is_ipv4() {
-            libc::setsockopt(
+
+        // 是否为可能承载 IPv4-mapped 流量的双栈 / IPv6 socket
+        let is_ipv6_socket = addr.is_ipv6();
+
+        if !is_ipv6_socket {
+            // 纯 IPv4 socket：只设置 IPv4 选项
+            let ret = libc::setsockopt(
                 sock.as_raw_fd(),
                 libc::IPPROTO_IP,
                 libc::IP_RECVORIGDSTADDR,
                 &one as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             );
+            if ret != 0 {
+                warn!(err=%std::io::Error::last_os_error(), "failed to set IP_RECVORIGDSTADDR");
+            }
         } else {
-            libc::setsockopt(
+            // IPv6 / 双栈 socket：两个选项都要设置
+            let ret_v6 = libc::setsockopt(
                 sock.as_raw_fd(),
                 libc::IPPROTO_IPV6,
                 libc::IPV6_RECVORIGDSTADDR,
                 &one as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             );
+            if ret_v6 != 0 {
+                warn!(err=%std::io::Error::last_os_error(), "failed to set IPV6_RECVORIGDSTADDR");
+            }
+
+            // 仅当不是 IPV6_V6ONLY 时，这个 socket 才可能收到 IPv4-mapped 流量。
+            // 默认（未显式设置 IPV6_V6ONLY）Linux 双栈 socket 是关闭 V6ONLY 的，
+            // 即会接收 IPv4-mapped 流量，所以始终尝试设置 IPv4 选项；
+            // 若失败（例如某些系统强制 V6ONLY 导致协议层拒绝），忽略错误即可，
+            // 不影响纯 IPv6 流量正常工作。
+            let ret_v4 = libc::setsockopt(
+                sock.as_raw_fd(),
+                libc::IPPROTO_IP,
+                libc::IP_RECVORIGDSTADDR,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            if ret_v4 != 0 {
+                debug!(
+                    err=%std::io::Error::last_os_error(),
+                    "failed to set IP_RECVORIGDSTADDR on dual-stack socket (expected if V6ONLY is forced)"
+                );
+            }
         }
     }
     sock.bind(&addr.into())?;
@@ -320,9 +363,14 @@ async fn run_udp(
                             break;
                         }
                         Err(e) => {
-                            error!(err=%e, "tproxy udp recvmsg error");
-                            guard.clear_ready();
-                            break;
+                            // 单个包解析失败（通常是非 TPROXY 重定向的杂散包，
+                            // 例如直接发到本端口的探测/扫描包，内核不会附带
+                            // IP_ORIGDSTADDR cmsg）。这类包丢弃即可，不应中断
+                            // 本次 edge-trigger 唤醒里后续正常包的处理，
+                            // 否则会导致同批次到达的其它合法包被延迟到下次
+                            // epoll 事件才能读取。
+                            debug!(err=%e, "tproxy udp recvmsg: dropping malformed/non-tproxy packet");
+                            continue;
                         }
                     };
 
