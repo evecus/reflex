@@ -117,8 +117,167 @@
       "udp_timeout": 300
     }
   ],
+  // 路由配置
+  "route": {
+    // ── 出口网络配置（与 sing-box route 顶层字段对齐）────────────────────────
+    //
+    // auto_detect_interface：自动检测并绑定默认出口网络接口（Linux/macOS/Windows）。
+    //   启用后，direct 出站会跟随系统路由表自动选择接口，解决多网卡/VPN 环境下
+    //   直连流量走错接口的问题。与 sing-box `route.auto_detect_interface` 对齐。
+    "auto_detect_interface": true,
+    "ipv6": true,
+    "default_mark": 1789,
+    //
+    // default_interface：强制指定出口接口名称（覆盖 auto_detect_interface）。
+    //   填写后所有 direct 连接绑定到该接口。不填时依赖自动检测或系统默认。
+    //   与 sing-box `route.default_interface` 对齐。
+    //   示例："default_interface": "eth0"
+    //
+    // default_mark：Linux fwmark，用于配合 iptables/nftables 策略路由，
+    //   避免代理流量形成回环。仅 Linux 有效。
+    //   与 sing-box `route.default_mark` 对齐。
+    //   示例："default_mark": 100
 
-  // 出站配置
+    "rules": [
+      // ── 协议嗅探 ────────────────────────────────────────────────────────
+      // 对所有流量先做嗅探（TLS SNI / HTTP Host / QUIC / SSH / BitTorrent），
+      // 用嗅探结果更新目标域名后重新路由。必须放在规则链最前面。
+      {
+        "sniff": true,
+        "sniff_type": ["tls", "http", "quic", "ssh", "bittorrent"],
+        "sniff_timeout_ms": 300,
+        "sniff_override_destination": false
+      },
+
+      // ── DNS 劫持 ─────────────────────────────────────────────────────────
+      { "hijack_dns": true, "protocol": ["dns"] },
+      { "hijack_dns": true, "inbound": ["dns-in"] },
+
+      // ── 广告拦截 ─────────────────────────────────────────────────────────
+      { "ruleset": ["geosite-ads"], "outbound": "block" },
+
+      // ── 私有地址 → 直连 ──────────────────────────────────────────────────
+      { "private_ip": true },
+
+      // ── 域名正则匹配（domain_regex）──────────────────────────────────────
+      // 匹配目标域名，大小写不敏感，语义为 OR（任意一条正则命中即可）。
+      // 与 sing-box `domain_regex` 字段完全对齐。
+      // 典型用法：匹配 Google 全系域名走代理
+      {
+        "domain_regex": [
+          "^.*\\.google\\.com$",
+          "^.*\\.googleapis\\.com$",
+          "^.*\\.gstatic\\.com$",
+          "^.*\\.googlevideo\\.com$"
+        ],
+        "outbound": "🚀 节点选择"
+      },
+
+      // ── 来源 IP CIDR（source_ip_cidr）────────────────────────────────────
+      // 匹配连接的来源地址，支持 IPv4/IPv6 CIDR，语义为 OR。
+      // 与 sing-box `source_ip_cidr` 字段完全对齐。
+      // 与其他目标条件之间是 AND 语义（两者同时需满足）。
+      //
+      // 示例 1：仅允许来自局域网的流量走直连
+      {
+        "source_ip_cidr": ["192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"],
+        "outbound": "direct"
+      },
+      //
+      // 示例 2：来自局域网 AND 目标是国内域名 → 直连（AND 语义）
+      // {
+      //   "source_ip_cidr": ["192.168.0.0/16"],
+      //   "domain_suffix": [".cn"],
+      //   "outbound": "direct"
+      // },
+
+      // ── 规则反转（invert）────────────────────────────────────────────────
+      // 反转所有匹配条件的聚合结果（逻辑 NOT）。
+      // 与 sing-box `invert` 字段完全对齐。
+      //
+      // 示例 1：非国内域名走代理（等价于"其余所有域名"）
+      // {
+      //   "ruleset": ["geosite-cn"],
+      //   "invert": true,
+      //   "outbound": "🚀 节点选择"
+      // },
+      //
+      // 示例 2：非国内 IP → 代理
+      // {
+      //   "ruleset": ["geoip-cn"],
+      //   "invert": true,
+      //   "outbound": "🚀 节点选择"
+      // },
+
+      // ── 国内 IP 和域名 → 直连 ────────────────────────────────────────────
+      { "ruleset": "geosite-cn", "outbound": "direct" },
+      { "resolve": true, "server": "remote" },
+      { "ruleset": "geoip-cn", "outbound": "direct" }
+    ],
+
+    // 默认出站：未命中规则的流量进入 selector 节点组
+    "final": "🚀 节点选择",
+
+    // 规则集文件声明
+    "rule_set": [
+      // 本地 binary 格式（默认，预编译 .rrs 文件）
+      {
+        "tag": "geosite-cn",
+        "type": "local",
+        "path": "/etc/reflex/rules/geosite-cn.rrs"
+      },
+      // 本地 source 格式（sing-box JSON，运行时自动编译，无需预编译）
+      {
+        "tag": "geosite-ads",
+        "type": "local",
+        "format": "source",
+        "path": "/etc/reflex/rules/geosite-ads.json"
+      },
+      // 远程 binary 格式，每 24 小时自动更新
+      {
+        "tag": "geoip-cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip-cn.srs",
+        "path": "/var/cache/reflex/geoip-cn.rrs",
+        "download_detour": "direct",
+        "update_interval": "24h"
+      },
+      // 远程 source 格式（sing-box JSON），每 12 小时更新，通过代理下载
+      {
+        "tag": "geosite-geolocation-!cn",
+        "type": "remote",
+        "format": "source",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.json",
+        "path": "/var/cache/reflex/geosite-geolocation-not-cn.json",
+        "download_detour": "proxy",
+        "update_interval": "12h"
+      }
+    ]
+  },
+
+  // 实验性功能
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "path": "cache.db",
+      "store_fakeip": true
+    },
+    "clash_api": {
+      "enabled": true,
+      "default_mode": "rule",
+      "mode_list": ["rule", "global", "direct"],
+      "external_controller": "0.0.0.0:9090",
+      "secret": "",
+      "external_ui": "ui",
+      "external_ui_download_url": "https://github.com/MetaCubeX/metacubexd/releases/latest/download/compressed-dist.tgz",
+      "external_ui_download_detour": "",
+      "access_control_allow_origin": [],
+      "access_control_allow_private_network": false
+    }
+  },
+
+// 出站配置
   "outbounds": [
     {
       "type": "selector",
@@ -290,165 +449,6 @@
     }
   ],
 
-  // 路由配置
-  "route": {
-    // ── 出口网络配置（与 sing-box route 顶层字段对齐）────────────────────────
-    //
-    // auto_detect_interface：自动检测并绑定默认出口网络接口（Linux/macOS/Windows）。
-    //   启用后，direct 出站会跟随系统路由表自动选择接口，解决多网卡/VPN 环境下
-    //   直连流量走错接口的问题。与 sing-box `route.auto_detect_interface` 对齐。
-    "auto_detect_interface": true,
-    "ipv6": true,
-    "default_mark": 1789,
-    //
-    // default_interface：强制指定出口接口名称（覆盖 auto_detect_interface）。
-    //   填写后所有 direct 连接绑定到该接口。不填时依赖自动检测或系统默认。
-    //   与 sing-box `route.default_interface` 对齐。
-    //   示例："default_interface": "eth0"
-    //
-    // default_mark：Linux fwmark，用于配合 iptables/nftables 策略路由，
-    //   避免代理流量形成回环。仅 Linux 有效。
-    //   与 sing-box `route.default_mark` 对齐。
-    //   示例："default_mark": 100
-
-    "rules": [
-      // ── 协议嗅探 ────────────────────────────────────────────────────────
-      // 对所有流量先做嗅探（TLS SNI / HTTP Host / QUIC / SSH / BitTorrent），
-      // 用嗅探结果更新目标域名后重新路由。必须放在规则链最前面。
-      {
-        "sniff": true,
-        "sniff_type": ["tls", "http", "quic", "ssh", "bittorrent"],
-        "sniff_timeout_ms": 300,
-        "sniff_override_destination": false
-      },
-
-      // ── DNS 劫持 ─────────────────────────────────────────────────────────
-      { "hijack_dns": true, "protocol": ["dns"] },
-      { "hijack_dns": true, "inbound": ["dns-in"] },
-
-      // ── 广告拦截 ─────────────────────────────────────────────────────────
-      { "ruleset": ["geosite-ads"], "outbound": "block" },
-
-      // ── 私有地址 → 直连 ──────────────────────────────────────────────────
-      { "private_ip": true },
-
-      // ── 域名正则匹配（domain_regex）──────────────────────────────────────
-      // 匹配目标域名，大小写不敏感，语义为 OR（任意一条正则命中即可）。
-      // 与 sing-box `domain_regex` 字段完全对齐。
-      // 典型用法：匹配 Google 全系域名走代理
-      {
-        "domain_regex": [
-          "^.*\\.google\\.com$",
-          "^.*\\.googleapis\\.com$",
-          "^.*\\.gstatic\\.com$",
-          "^.*\\.googlevideo\\.com$"
-        ],
-        "outbound": "🚀 节点选择"
-      },
-
-      // ── 来源 IP CIDR（source_ip_cidr）────────────────────────────────────
-      // 匹配连接的来源地址，支持 IPv4/IPv6 CIDR，语义为 OR。
-      // 与 sing-box `source_ip_cidr` 字段完全对齐。
-      // 与其他目标条件之间是 AND 语义（两者同时需满足）。
-      //
-      // 示例 1：仅允许来自局域网的流量走直连
-      {
-        "source_ip_cidr": ["192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"],
-        "outbound": "direct"
-      },
-      //
-      // 示例 2：来自局域网 AND 目标是国内域名 → 直连（AND 语义）
-      // {
-      //   "source_ip_cidr": ["192.168.0.0/16"],
-      //   "domain_suffix": [".cn"],
-      //   "outbound": "direct"
-      // },
-
-      // ── 规则反转（invert）────────────────────────────────────────────────
-      // 反转所有匹配条件的聚合结果（逻辑 NOT）。
-      // 与 sing-box `invert` 字段完全对齐。
-      //
-      // 示例 1：非国内域名走代理（等价于"其余所有域名"）
-      // {
-      //   "ruleset": ["geosite-cn"],
-      //   "invert": true,
-      //   "outbound": "🚀 节点选择"
-      // },
-      //
-      // 示例 2：非国内 IP → 代理
-      // {
-      //   "ruleset": ["geoip-cn"],
-      //   "invert": true,
-      //   "outbound": "🚀 节点选择"
-      // },
-
-      // ── 国内 IP 和域名 → 直连 ────────────────────────────────────────────
-      { "ruleset": "geosite-cn", "outbound": "direct" },
-      { "resolve": true, "server": "remote" },
-      { "ruleset": "geoip-cn", "outbound": "direct" }
-    ],
-
-    // 默认出站：未命中规则的流量进入 selector 节点组
-    "final": "🚀 节点选择",
-
-    // 规则集文件声明
-    "rule_set": [
-      // 本地 binary 格式（默认，预编译 .rrs 文件）
-      {
-        "tag": "geosite-cn",
-        "type": "local",
-        "path": "/etc/reflex/rules/geosite-cn.rrs"
-      },
-      // 本地 source 格式（sing-box JSON，运行时自动编译，无需预编译）
-      {
-        "tag": "geosite-ads",
-        "type": "local",
-        "format": "source",
-        "path": "/etc/reflex/rules/geosite-ads.json"
-      },
-      // 远程 binary 格式，每 24 小时自动更新
-      {
-        "tag": "geoip-cn",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip-cn.srs",
-        "path": "/var/cache/reflex/geoip-cn.rrs",
-        "download_detour": "direct",
-        "update_interval": "24h"
-      },
-      // 远程 source 格式（sing-box JSON），每 12 小时更新，通过代理下载
-      {
-        "tag": "geosite-geolocation-!cn",
-        "type": "remote",
-        "format": "source",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.json",
-        "path": "/var/cache/reflex/geosite-geolocation-not-cn.json",
-        "download_detour": "proxy",
-        "update_interval": "12h"
-      }
-    ]
-  },
-
-  // 实验性功能
-  "experimental": {
-    "cache_file": {
-      "enabled": true,
-      "path": "cache.db",
-      "store_fakeip": true
-    },
-    "clash_api": {
-      "enabled": true,
-      "default_mode": "rule",
-      "mode_list": ["rule", "global", "direct"],
-      "external_controller": "0.0.0.0:9090",
-      "secret": "",
-      "external_ui": "ui",
-      "external_ui_download_url": "https://github.com/MetaCubeX/metacubexd/releases/latest/download/compressed-dist.tgz",
-      "external_ui_download_detour": "",
-      "access_control_allow_origin": [],
-      "access_control_allow_private_network": false
-    }
-  },
   // 日志配置
   "log": {
     "level": "info",
