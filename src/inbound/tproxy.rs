@@ -514,8 +514,51 @@ fn tproxy_udp_writeback(
         }
     }
     sock.bind(&server_addr.into())?;
-    sock.send_to(data, &client_addr.into())?;
+
+    // 关键修复：server_addr（伪造源地址，即原始目标/游戏服务器地址）决定了
+    // 上面创建的 socket 是 IPv4 还是 IPv6 domain。但 client_addr 来自双栈
+    // tproxy 监听 socket 的 recvmsg，对 IPv4 流量内核返回的是 IPv4-mapped
+    // IPv6 地址（::ffff:a.b.c.d），即 Rust 里的 SocketAddr::V6。
+    //
+    // 用一个 IPv4-only socket 对 SocketAddr::V6 地址调用 send_to 会被内核
+    // 以 EAFNOSUPPORT (errno 97, "Address family not supported by protocol")
+    // 拒绝——这正是 "tproxy udp writeback error" 反复出现、UDP 会话建立但
+    // 回包永远发不出去的根本原因（游戏等 UDP 业务因此连不上）。
+    //
+    // 这里按 socket 的实际协议族，把 client_addr 规整成匹配的形式：
+    //   - socket 是 IPv4 且 client_addr 是 IPv4-mapped IPv6 → 转回纯 IPv4
+    //   - socket 是 IPv6 且 client_addr 是纯 IPv4 → 转成 IPv4-mapped IPv6
+    // 两种协议族真正不匹配（不可转换）的情况理论上不会出现，因为
+    // client_addr 和 server_addr 是同一个 tproxy 监听 socket 在同一次
+    // recvmsg 里取到的，必然来自同一条连接。
+    let send_addr = normalize_addr_family(client_addr, server_addr.is_ipv6());
+    sock.send_to(data, &send_addr.into())?;
     Ok(())
+}
+
+/// 将 `addr` 规整为与 `want_ipv6` 一致的协议族表示。
+///
+/// - `want_ipv6 == false` 且 `addr` 是 IPv4-mapped IPv6（`::ffff:a.b.c.d`）
+///   → 转换为对应的纯 IPv4 `SocketAddr`。
+/// - `want_ipv6 == true` 且 `addr` 是纯 IPv4 → 转换为 IPv4-mapped IPv6。
+/// - 其余情况（协议族已经匹配，或无法转换的真正异构地址）原样返回。
+fn normalize_addr_family(addr: SocketAddr, want_ipv6: bool) -> SocketAddr {
+    match (addr, want_ipv6) {
+        (SocketAddr::V6(v6), false) => {
+            if let Some(v4) = v6.ip().to_ipv4_mapped() {
+                SocketAddr::V4(SocketAddrV4::new(v4, v6.port()))
+            } else {
+                addr
+            }
+        }
+        (SocketAddr::V4(v4), true) => SocketAddr::V6(SocketAddrV6::new(
+            v4.ip().to_ipv6_mapped(),
+            v4.port(),
+            0,
+            0,
+        )),
+        _ => addr,
+    }
 }
 
 fn extract_original_dst_from_cmsg(msg: &libc::msghdr) -> anyhow::Result<SocketAddr> {
