@@ -3,9 +3,10 @@
   "rules": [
     {
       "domain_suffix": [
-        "ads.yahoo.com",
-        "gemini.yahoo.com",
-        "ysm.yahoo.com"
+        "nhk",
+        "nhk.jp",
+        "nhkworld.jp",
+        "nhk.or.jp"
       ]
     }
   ]
