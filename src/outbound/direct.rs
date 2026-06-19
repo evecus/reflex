@@ -23,10 +23,12 @@ use crate::{
     dns::DnsResolver,
     inbound::{InboundTcpStream, InboundUdpPacket},
     outbound::{
-        apply_mark_to_tcp, apply_mark_to_udp, interface_finder, relay, resolve_target_with_dns,
+        apply_mark_to_tcp, apply_mark_to_udp, relay, resolve_target_with_dns,
         set_tcp_opts, Outbound, OutboundStatus,
     },
 };
+#[cfg(unix)]
+use crate::outbound::interface_finder;
 
 // ── Direct ────────────────────────────────────────────────────────────────────
 
@@ -94,6 +96,7 @@ impl DirectOutbound {
     fn apply_interface_bind(&self, _fd: std::os::unix::io::RawFd, _target_ip: std::net::IpAddr) {}
 
     #[cfg(not(unix))]
+    #[allow(dead_code)]
     fn apply_interface_bind(&self, _fd: i32, _target_ip: std::net::IpAddr) {}
 
     const TCP_CONNECT_TIMEOUT_SECS: u64 = 5;
