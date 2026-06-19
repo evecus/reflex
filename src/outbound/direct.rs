@@ -90,8 +90,11 @@ impl DirectOutbound {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     fn apply_interface_bind(&self, _fd: std::os::unix::io::RawFd, _target_ip: std::net::IpAddr) {}
+
+    #[cfg(not(unix))]
+    fn apply_interface_bind(&self, _fd: i32, _target_ip: std::net::IpAddr) {}
 
     const TCP_CONNECT_TIMEOUT_SECS: u64 = 5;
 
@@ -127,8 +130,11 @@ impl DirectOutbound {
             };
             socket.set_reuseaddr(true)?;
             {
-                use std::os::unix::io::AsRawFd;
-                self.apply_interface_bind(socket.as_raw_fd(), addr.ip());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    self.apply_interface_bind(socket.as_raw_fd(), addr.ip());
+                }
             }
             tokio::time::timeout(connect_timeout, socket.connect(addr))
                 .await
@@ -168,8 +174,11 @@ impl DirectOutbound {
         let sock = tokio::net::UdpSocket::bind(bind_addr).await?;
 
         if self.default_interface.is_some() || self.auto_detect_interface {
-            use std::os::unix::io::AsRawFd;
-            self.apply_interface_bind(sock.as_raw_fd(), dst.ip());
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsRawFd;
+                self.apply_interface_bind(sock.as_raw_fd(), dst.ip());
+            }
         }
 
         apply_mark_to_udp(&sock, self.routing_mark)?;
