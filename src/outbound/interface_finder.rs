@@ -227,6 +227,7 @@ mod linux {
 ///
 /// `fd` 是已创建但尚未 connect 的 socket 文件描述符。
 /// 非 Linux 平台为空操作，编译不产生任何代码。
+#[cfg(unix)]
 #[allow(unused_variables)]
 pub fn auto_bind_interface_for_target(fd: std::os::unix::io::RawFd, target: std::net::IpAddr) {
     #[cfg(target_os = "linux")]
@@ -236,6 +237,7 @@ pub fn auto_bind_interface_for_target(fd: std::os::unix::io::RawFd, target: std:
 /// 将 socket 绑定到指定网卡名称（仅 Linux 生效）。
 ///
 /// 非 Linux 平台为空操作。
+#[cfg(unix)]
 #[allow(unused_variables)]
 pub fn bind_to_interface(fd: std::os::unix::io::RawFd, iface_name: &str) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
