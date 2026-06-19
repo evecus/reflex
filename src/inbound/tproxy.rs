@@ -551,12 +551,9 @@ fn normalize_addr_family(addr: SocketAddr, want_ipv6: bool) -> SocketAddr {
                 addr
             }
         }
-        (SocketAddr::V4(v4), true) => SocketAddr::V6(SocketAddrV6::new(
-            v4.ip().to_ipv6_mapped(),
-            v4.port(),
-            0,
-            0,
-        )),
+        (SocketAddr::V4(v4), true) => {
+            SocketAddr::V6(SocketAddrV6::new(v4.ip().to_ipv6_mapped(), v4.port(), 0, 0))
+        }
         _ => addr,
     }
 }

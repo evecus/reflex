@@ -38,15 +38,18 @@ impl OutboundManager {
         configs: &[OutboundConfig],
         resolver: Option<Arc<DnsResolver>>,
     ) -> anyhow::Result<Self> {
-        Self::from_config_full(configs, OutboundManagerConfig {
-            resolver,
-            cache_writer: None,
-            cache_reader: None,
-            provider_manager: None,
-            routing_mark: 0,
-            auto_detect_interface: false,
-            default_interface: None,
-        })
+        Self::from_config_full(
+            configs,
+            OutboundManagerConfig {
+                resolver,
+                cache_writer: None,
+                cache_reader: None,
+                provider_manager: None,
+                routing_mark: 0,
+                auto_detect_interface: false,
+                default_interface: None,
+            },
+        )
     }
 
     /// 完整构造函数，支持 CacheFile 持久化和 ProviderManager。

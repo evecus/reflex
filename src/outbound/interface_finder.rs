@@ -60,7 +60,11 @@ mod linux {
                         let ip = IpAddr::V6(std::net::Ipv6Addr::from(sa.sin6_addr.s6_addr));
                         let prefix_len = if !ifa_ref.ifa_netmask.is_null() {
                             let nm = &*(ifa_ref.ifa_netmask as *const libc::sockaddr_in6);
-                            nm.sin6_addr.s6_addr.iter().map(|b| b.count_ones() as u8).sum()
+                            nm.sin6_addr
+                                .s6_addr
+                                .iter()
+                                .map(|b| b.count_ones() as u8)
+                                .sum()
                         } else {
                             128
                         };
@@ -172,7 +176,10 @@ mod linux {
     ///
     /// # Safety
     /// `fd` 必须是有效的 socket 文件描述符。
-    pub fn bind_to_interface(fd: std::os::unix::io::RawFd, iface_name: &str) -> std::io::Result<()> {
+    pub fn bind_to_interface(
+        fd: std::os::unix::io::RawFd,
+        iface_name: &str,
+    ) -> std::io::Result<()> {
         let name = std::ffi::CString::new(iface_name)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         // SO_BINDTODEVICE 需要 CAP_NET_RAW 或 root；在 OpenWrt 上 sing-box/clash 也是这样做的

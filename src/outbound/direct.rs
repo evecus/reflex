@@ -111,7 +111,13 @@ impl DirectOutbound {
             socket.bind(bind_addr)?;
             tokio::time::timeout(connect_timeout, socket.connect(addr))
                 .await
-                .map_err(|_| anyhow::anyhow!("direct tcp connect timeout ({}s) to {}", Self::TCP_CONNECT_TIMEOUT_SECS, addr))??
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "direct tcp connect timeout ({}s) to {}",
+                        Self::TCP_CONNECT_TIMEOUT_SECS,
+                        addr
+                    )
+                })??
         } else if self.default_interface.is_some() || self.auto_detect_interface {
             // 网卡绑定模式：在 connect 之前用 SO_BINDTODEVICE 绑定正确网卡
             let socket = if addr.is_ipv6() {
@@ -126,11 +132,23 @@ impl DirectOutbound {
             }
             tokio::time::timeout(connect_timeout, socket.connect(addr))
                 .await
-                .map_err(|_| anyhow::anyhow!("direct tcp connect timeout ({}s) to {}", Self::TCP_CONNECT_TIMEOUT_SECS, addr))??
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "direct tcp connect timeout ({}s) to {}",
+                        Self::TCP_CONNECT_TIMEOUT_SECS,
+                        addr
+                    )
+                })??
         } else {
             tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
                 .await
-                .map_err(|_| anyhow::anyhow!("direct tcp connect timeout ({}s) to {}", Self::TCP_CONNECT_TIMEOUT_SECS, addr))??
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "direct tcp connect timeout ({}s) to {}",
+                        Self::TCP_CONNECT_TIMEOUT_SECS,
+                        addr
+                    )
+                })??
         };
         set_tcp_opts(&stream)?;
         apply_mark_to_tcp(&stream, self.routing_mark)?;
@@ -245,7 +263,11 @@ impl Outbound for DirectOutbound {
                     Ok(Ok((n, _from))) => {
                         let data = bytes::Bytes::copy_from_slice(&buf[..n]);
                         let spoofed_src = dst;
-                        if reply_tx.send((data, client_src, spoofed_src)).await.is_err() {
+                        if reply_tx
+                            .send((data, client_src, spoofed_src))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }

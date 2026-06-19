@@ -670,11 +670,8 @@ impl CompiledRule {
             let port_val = target.port();
 
             let ruleset_ok = !has_ruleset || self.match_rulesets(&addr_mt, port_val);
-            let addr_rs_ok = !has_addr_rs
-                || self
-                    .addr_rs
-                    .as_ref()
-                    .is_some_and(|rs| rs.matches(&addr_mt));
+            let addr_rs_ok =
+                !has_addr_rs || self.addr_rs.as_ref().is_some_and(|rs| rs.matches(&addr_mt));
             let port_rs_ok = !has_port_rs
                 || self
                     .port_rs
@@ -1086,7 +1083,10 @@ mod tests {
     fn default_route() {
         let r = make_router(vec![], "proxy");
         let t = Target::Domain("example.com".into(), 443);
-        assert_eq!(route(&r, "in", NetworkKind::Tcp, &t), &RouteAction::Outbound("proxy".into()));
+        assert_eq!(
+            route(&r, "in", NetworkKind::Tcp, &t),
+            &RouteAction::Outbound("proxy".into())
+        );
     }
 
     #[test]
@@ -1095,8 +1095,14 @@ mod tests {
         rule.inbound = vec!["tproxy-in".into()];
         let r = make_router(vec![rule], "proxy");
         let t = Target::Domain("example.com".into(), 80);
-        assert_eq!(route(&r, "tproxy-in", NetworkKind::Tcp, &t), &RouteAction::Outbound("direct".into()));
-        assert_eq!(route(&r, "mixed-in", NetworkKind::Tcp, &t), &RouteAction::Outbound("proxy".into()));
+        assert_eq!(
+            route(&r, "tproxy-in", NetworkKind::Tcp, &t),
+            &RouteAction::Outbound("direct".into())
+        );
+        assert_eq!(
+            route(&r, "mixed-in", NetworkKind::Tcp, &t),
+            &RouteAction::Outbound("proxy".into())
+        );
     }
 
     #[test]
@@ -1105,8 +1111,14 @@ mod tests {
         rule.network = Some(NetworkFilter::Udp);
         let r = make_router(vec![rule], "proxy");
         let t = Target::Socket("8.8.8.8:53".parse().unwrap());
-        assert_eq!(route(&r, "in", NetworkKind::Udp, &t), &RouteAction::Outbound("direct".into()));
-        assert_eq!(route(&r, "in", NetworkKind::Tcp, &t), &RouteAction::Outbound("proxy".into()));
+        assert_eq!(
+            route(&r, "in", NetworkKind::Udp, &t),
+            &RouteAction::Outbound("direct".into())
+        );
+        assert_eq!(
+            route(&r, "in", NetworkKind::Tcp, &t),
+            &RouteAction::Outbound("proxy".into())
+        );
     }
 
     #[test]
@@ -1115,11 +1127,21 @@ mod tests {
         rule.domain_suffix = vec!["cn".into()];
         let r = make_router(vec![rule], "proxy");
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Domain("baidu.com.cn".into(), 80)),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Domain("baidu.com.cn".into(), 80)
+            ),
             &RouteAction::Outbound("direct".into())
         );
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Domain("google.com".into(), 443)),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Domain("google.com".into(), 443)
+            ),
             &RouteAction::Outbound("proxy".into())
         );
     }
@@ -1130,11 +1152,21 @@ mod tests {
         rule.domain = vec!["example.com".into()];
         let r = make_router(vec![rule], "proxy");
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Domain("example.com".into(), 80)),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Domain("example.com".into(), 80)
+            ),
             &RouteAction::Outbound("direct".into())
         );
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Domain("sub.example.com".into(), 80)),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Domain("sub.example.com".into(), 80)
+            ),
             &RouteAction::Outbound("proxy".into())
         );
     }
@@ -1145,11 +1177,21 @@ mod tests {
         rule.ip_cidr = vec!["192.168.0.0/16".into()];
         let r = make_router(vec![rule], "proxy");
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Socket("192.168.1.1:80".parse().unwrap())),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Socket("192.168.1.1:80".parse().unwrap())
+            ),
             &RouteAction::Outbound("direct".into())
         );
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Socket("8.8.8.8:53".parse().unwrap())),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Socket("8.8.8.8:53".parse().unwrap())
+            ),
             &RouteAction::Outbound("proxy".into())
         );
     }
@@ -1162,11 +1204,21 @@ mod tests {
         rule.domain_regex = vec!["^.*\\.google\\.com$".into()];
         let r = make_router(vec![rule], "direct");
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Domain("www.google.com".into(), 443)),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Domain("www.google.com".into(), 443)
+            ),
             &RouteAction::Outbound("proxy".into())
         );
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Domain("baidu.com".into(), 80)),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Domain("baidu.com".into(), 80)
+            ),
             &RouteAction::Outbound("direct".into())
         );
     }
@@ -1178,7 +1230,12 @@ mod tests {
         let r = make_router(vec![rule], "direct");
         // 大小写不敏感：WWW.GOOGLE.COM 也应命中
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Domain("WWW.GOOGLE.COM".into(), 443)),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Domain("WWW.GOOGLE.COM".into(), 443)
+            ),
             &RouteAction::Outbound("proxy".into())
         );
     }
@@ -1190,7 +1247,12 @@ mod tests {
         let r = make_router(vec![rule], "direct");
         // IP 目标不触发 domain_regex
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Socket("1.2.3.4:80".parse().unwrap())),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Socket("1.2.3.4:80".parse().unwrap())
+            ),
             &RouteAction::Outbound("direct".into())
         );
     }
@@ -1205,12 +1267,26 @@ mod tests {
         let t = Target::Domain("example.com".into(), 80);
         // 来自 192.168.x.x 的连接命中
         assert_eq!(
-            r.route("in", Some(NetworkKind::Tcp), &t, None, Some("192.168.1.100".parse().unwrap())).0,
+            r.route(
+                "in",
+                Some(NetworkKind::Tcp),
+                &t,
+                None,
+                Some("192.168.1.100".parse().unwrap())
+            )
+            .0,
             &RouteAction::Outbound("direct".into())
         );
         // 来自公网 IP 的连接不命中
         assert_eq!(
-            r.route("in", Some(NetworkKind::Tcp), &t, None, Some("8.8.8.8".parse().unwrap())).0,
+            r.route(
+                "in",
+                Some(NetworkKind::Tcp),
+                &t,
+                None,
+                Some("8.8.8.8".parse().unwrap())
+            )
+            .0,
             &RouteAction::Outbound("proxy".into())
         );
         // 无来源 IP 的连接不命中
@@ -1233,17 +1309,38 @@ mod tests {
 
         // 来自内网 + 国内域名 → 命中
         assert_eq!(
-            r.route("in", Some(NetworkKind::Tcp), &cn_target, None, Some("10.1.2.3".parse().unwrap())).0,
+            r.route(
+                "in",
+                Some(NetworkKind::Tcp),
+                &cn_target,
+                None,
+                Some("10.1.2.3".parse().unwrap())
+            )
+            .0,
             &RouteAction::Outbound("direct".into())
         );
         // 来自内网 + 非国内域名 → 不命中
         assert_eq!(
-            r.route("in", Some(NetworkKind::Tcp), &non_cn, None, Some("10.1.2.3".parse().unwrap())).0,
+            r.route(
+                "in",
+                Some(NetworkKind::Tcp),
+                &non_cn,
+                None,
+                Some("10.1.2.3".parse().unwrap())
+            )
+            .0,
             &RouteAction::Outbound("proxy".into())
         );
         // 来自外网 + 国内域名 → 不命中（source_ip_cidr 不匹配）
         assert_eq!(
-            r.route("in", Some(NetworkKind::Tcp), &cn_target, None, Some("8.8.8.8".parse().unwrap())).0,
+            r.route(
+                "in",
+                Some(NetworkKind::Tcp),
+                &cn_target,
+                None,
+                Some("8.8.8.8".parse().unwrap())
+            )
+            .0,
             &RouteAction::Outbound("proxy".into())
         );
     }
@@ -1259,12 +1356,22 @@ mod tests {
         let r = make_router(vec![rule], "direct");
         // 国内域名：正常命中后被 invert → 不命中 → 走 direct
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Domain("baidu.cn".into(), 80)),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Domain("baidu.cn".into(), 80)
+            ),
             &RouteAction::Outbound("direct".into())
         );
         // 非国内域名：正常不命中后被 invert → 命中 → 走 proxy
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Domain("google.com".into(), 443)),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Domain("google.com".into(), 443)
+            ),
             &RouteAction::Outbound("proxy".into())
         );
     }
@@ -1278,12 +1385,22 @@ mod tests {
         let r = make_router(vec![rule], "direct");
         // 私有 IP → 取反 → 不命中
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Socket("192.168.1.1:80".parse().unwrap())),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Socket("192.168.1.1:80".parse().unwrap())
+            ),
             &RouteAction::Outbound("direct".into())
         );
         // 公网 IP → 取反 → 命中
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Socket("8.8.8.8:53".parse().unwrap())),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Socket("8.8.8.8:53".parse().unwrap())
+            ),
             &RouteAction::Outbound("proxy".into())
         );
     }
@@ -1296,11 +1413,21 @@ mod tests {
         rule.port = vec![PortFilter(80, 80), PortFilter(443, 443)];
         let r = make_router(vec![rule], "proxy");
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Socket("1.1.1.1:80".parse().unwrap())),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Socket("1.1.1.1:80".parse().unwrap())
+            ),
             &RouteAction::Outbound("direct".into())
         );
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Socket("1.1.1.1:22".parse().unwrap())),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Socket("1.1.1.1:22".parse().unwrap())
+            ),
             &RouteAction::Outbound("proxy".into())
         );
     }
@@ -1311,11 +1438,21 @@ mod tests {
         rule.port = vec![PortFilter(8000, 9000)];
         let r = make_router(vec![rule], "proxy");
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Socket("1.1.1.1:8500".parse().unwrap())),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Socket("1.1.1.1:8500".parse().unwrap())
+            ),
             &RouteAction::Outbound("direct".into())
         );
         assert_eq!(
-            route(&r, "in", NetworkKind::Tcp, &Target::Socket("1.1.1.1:7999".parse().unwrap())),
+            route(
+                &r,
+                "in",
+                NetworkKind::Tcp,
+                &Target::Socket("1.1.1.1:7999".parse().unwrap())
+            ),
             &RouteAction::Outbound("proxy".into())
         );
     }
@@ -1340,7 +1477,10 @@ mod tests {
         r2.domain_suffix = vec!["google.com".into()];
         let r = make_router(vec![r1, r2], "proxy");
         let t = Target::Domain("www.google.com".into(), 443);
-        assert_eq!(route(&r, "in", NetworkKind::Tcp, &t), &RouteAction::Outbound("direct".into()));
+        assert_eq!(
+            route(&r, "in", NetworkKind::Tcp, &t),
+            &RouteAction::Outbound("direct".into())
+        );
     }
 
     #[test]
@@ -1348,7 +1488,12 @@ mod tests {
         let rule = empty_rule("direct");
         let r = make_router(vec![rule], "proxy");
         assert_eq!(
-            route(&r, "any-in", NetworkKind::Tcp, &Target::Domain("anything.example".into(), 1234)),
+            route(
+                &r,
+                "any-in",
+                NetworkKind::Tcp,
+                &Target::Domain("anything.example".into(), 1234)
+            ),
             &RouteAction::Outbound("direct".into())
         );
     }
@@ -1391,7 +1536,12 @@ mod tests {
 
         for ip in ["10.0.0.1:80", "172.16.0.1:80", "192.168.1.1:80"] {
             assert_eq!(
-                route(&r, "in", NetworkKind::Tcp, &Target::Socket(ip.parse().unwrap())),
+                route(
+                    &r,
+                    "in",
+                    NetworkKind::Tcp,
+                    &Target::Socket(ip.parse().unwrap())
+                ),
                 &RouteAction::Outbound("direct".into()),
                 "should match private IP: {ip}"
             );
@@ -1399,7 +1549,12 @@ mod tests {
 
         for ip in ["8.8.8.8:53", "1.1.1.1:443"] {
             assert_eq!(
-                route(&r, "in", NetworkKind::Tcp, &Target::Socket(ip.parse().unwrap())),
+                route(
+                    &r,
+                    "in",
+                    NetworkKind::Tcp,
+                    &Target::Socket(ip.parse().unwrap())
+                ),
                 &RouteAction::Outbound("proxy".into()),
                 "should not match public IP: {ip}"
             );
@@ -1447,7 +1602,9 @@ mod hijack_dns_tests {
         let router = Router::from_config(&config, None, None).unwrap();
         let t = Target::Socket("8.8.8.8:53".parse().unwrap());
         assert_eq!(
-            router.route("any-in", Some(NetworkKind::Udp), &t, Some("dns"), None).0,
+            router
+                .route("any-in", Some(NetworkKind::Udp), &t, Some("dns"), None)
+                .0,
             &RouteAction::DnsOut
         );
     }
@@ -1458,7 +1615,9 @@ mod hijack_dns_tests {
         let router = Router::from_config(&config, None, None).unwrap();
         let t = Target::Domain("example.com".into(), 53);
         assert_eq!(
-            router.route("dns-in", Some(NetworkKind::Udp), &t, None, None).0,
+            router
+                .route("dns-in", Some(NetworkKind::Udp), &t, None, None)
+                .0,
             &RouteAction::DnsOut
         );
     }

@@ -384,7 +384,9 @@ impl Serialize for PortFilter {
     }
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 #[cfg(test)]
 mod tests {
