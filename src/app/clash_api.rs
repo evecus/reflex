@@ -7,7 +7,8 @@
 //! - GET /logs     （HTTP 流式 & WebSocket 实时推送）
 //! - GET /rules
 //! - GET/PUT /proxies, GET /proxies/:name, GET /proxies/:name/delay
-//! - GET/DELETE /connections
+//! - GET/DELETE /connections（DELETE 会主动终止底层连接，对齐 sing-box，
+//!   而不仅仅是从展示列表中移除）, DELETE /connections/:id
 //! - GET /providers/proxies, /providers/rules
 //! - 静态 external_ui 文件服务
 //! - Bearer 密钥鉴权（secret 非空时启用）
@@ -15,7 +16,10 @@
 use std::{
     collections::HashMap,
     path::{Component, Path, PathBuf},
-    sync::{atomic::Ordering, Arc, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -33,7 +37,7 @@ use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::broadcast,
+    sync::{broadcast, Notify},
 };
 use tracing::{debug, info};
 
@@ -137,6 +141,11 @@ pub struct ConnMeta {
     pub started_ms: u64,
     pub upload: Arc<AtomicI64>,
     pub download: Arc<AtomicI64>,
+    /// DELETE /connections(/:id) 设置为 true 以请求主动终止该连接。
+    pub cancelled: Arc<AtomicBool>,
+    /// 配合 cancelled 使用：取消时调用 notify_waiters() 唤醒 dispatcher 中
+    /// 正在 select! 等待的任务，避免轮询。
+    pub cancel_notify: Arc<Notify>,
 }
 
 pub struct ConnGuard {
@@ -163,6 +172,33 @@ impl ConnGuard {
         self.tracker
             .get(self.id)
             .map(|meta| (meta.upload.clone(), meta.download.clone()))
+    }
+
+    /// 返回该连接的取消句柄 (cancelled flag, notify)，供 dispatcher 在
+    /// `tokio::select!` 中与实际数据转发竞速，实现 DELETE /connections(/:id)
+    /// 主动终止活跃连接（而不仅仅是从展示列表中移除）。
+    pub fn cancel_handle(&self) -> Option<(Arc<AtomicBool>, Arc<Notify>)> {
+        self.tracker
+            .get(self.id)
+            .map(|meta| (meta.cancelled.clone(), meta.cancel_notify.clone()))
+    }
+}
+
+/// 等待连接被 Clash API 标记为取消（DELETE /connections 或 DELETE /connections/:id）。
+///
+/// 用法：与实际转发 future 一起放入 `tokio::select!`；一旦被取消，转发 future
+/// 会被丢弃（drop），其内部持有的入站/出站 socket 随之关闭，从而真正终止连接，
+/// 而不只是把它从 Clash API 的展示列表中移除。
+///
+/// 采用 tokio 官方推荐的"先构造 Notified 再检查标志位"写法，避免 check-then-wait
+/// 之间的竞态导致错过通知（notify_waiters 只唤醒构造时间早于该调用的 Notified）。
+pub async fn wait_cancelled(cancelled: &AtomicBool, notify: &Notify) {
+    loop {
+        let notified = notify.notified();
+        if cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+        notified.await;
     }
 }
 
@@ -202,6 +238,8 @@ impl ConnectionTracker {
             started_ms: now,
             upload: Arc::new(AtomicI64::new(0)),
             download: Arc::new(AtomicI64::new(0)),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            cancel_notify: Arc::new(Notify::new()),
         };
         self.conns.insert(id, meta);
         ConnGuard {
@@ -233,6 +271,30 @@ impl ConnectionTracker {
 
     pub fn remove_by_id(&self, id: u64) {
         self.conns.remove(&id);
+    }
+
+    /// 请求终止指定连接（设置取消标志并唤醒等待者），不立即从展示列表移除——
+    /// 调用方通常紧接着调用 `remove_by_id` 让其立刻从 GET /connections 中消失，
+    /// 而底层 socket 会在 dispatcher 的 select! 感知到取消后异步关闭。
+    pub fn cancel_by_id(&self, id: u64) {
+        if let Some(meta) = self.conns.get(&id) {
+            meta.cancelled.store(true, Ordering::Relaxed);
+            meta.cancel_notify.notify_waiters();
+        }
+    }
+
+    /// 请求终止所有当前活跃连接（对齐 sing-box `DELETE /connections` 行为：
+    /// 关闭全部连接，而不仅仅是清空统计）。
+    pub fn cancel_all(&self) {
+        for entry in self.conns.iter() {
+            entry.value().cancelled.store(true, Ordering::Relaxed);
+            entry.value().cancel_notify.notify_waiters();
+        }
+    }
+
+    /// 清空连接展示表（配合 cancel_all 使用，使 GET /connections 立即归零）。
+    pub fn clear(&self) {
+        self.conns.clear();
     }
 }
 
@@ -755,14 +817,21 @@ impl ClashApi {
         let snap = self.stats.global_snapshot();
         let conns = self.conn_tracker.snapshot();
         let conn_json: Vec<serde_json::Value> = conns.iter().map(conn_to_json).collect();
+        let memory = read_process_rss_kb().unwrap_or(0) * 1024;
         json_response(json!({
             "downloadTotal": snap.bytes_down,
             "uploadTotal": snap.bytes_up,
             "connections": conn_json,
+            "memory": memory,
         }))
     }
 
     fn delete_connections(&self) -> HttpResponse {
+        // 对齐 sing-box：DELETE /connections 应主动关闭所有活跃连接，
+        // 而不仅仅是确认请求。cancel_all 唤醒 dispatcher 中的 select!，
+        // 使其丢弃转发 future（从而关闭底层 socket）；clear 让展示列表立即归零。
+        self.conn_tracker.cancel_all();
+        self.conn_tracker.clear();
         empty_response(204, "No Content")
     }
 
@@ -775,15 +844,32 @@ impl ClashApi {
         if stream.write_all(handshake.as_bytes()).await.is_err() {
             return;
         }
+
+        // 解析 ?interval=毫秒（对齐 sing-box getConnections 的 interval 查询参数），
+        // 未提供或非法时默认 1000ms。
+        let full_path = &request.path;
+        let query = full_path
+            .find('?')
+            .map(|i| &full_path[i + 1..])
+            .unwrap_or("");
+        let interval_ms: u64 = query
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("interval="))
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(1000);
+
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
             let snap = self.stats.global_snapshot();
             let conns = self.conn_tracker.snapshot();
             let conn_json: Vec<serde_json::Value> = conns.iter().map(conn_to_json).collect();
+            let memory = read_process_rss_kb().unwrap_or(0) * 1024;
             let msg = serde_json::to_vec(&json!({
                 "downloadTotal": snap.bytes_down,
                 "uploadTotal": snap.bytes_up,
                 "connections": conn_json,
+                "memory": memory,
             }))
             .unwrap_or_default();
             if ws_send_text(&mut stream, &msg).await.is_err() {
@@ -830,6 +916,9 @@ impl ClashApi {
     fn delete_connection(&self, id_str: &str) -> HttpResponse {
         match id_str.parse::<u64>() {
             Ok(id) => {
+                // 先发出取消信号（此时连接仍在 map 中，cancel_by_id 才能找到它），
+                // 再从展示列表移除，让 GET /connections 立即不再显示它。
+                self.conn_tracker.cancel_by_id(id);
                 self.conn_tracker.remove_by_id(id);
                 empty_response(204, "No Content")
             }
@@ -951,28 +1040,21 @@ impl ClashApi {
                 vec![json!({"time": ms_to_iso(r.time_ms), "delay": r.delay, "meanDelay": r.delay})]
             })
             .unwrap_or_default();
-        let member_proxies: Vec<serde_json::Value> = status.all.iter().map(|tag| {
-            let h = self.delay_history.load(tag)
-                .map(|r| vec![json!({"time": ms_to_iso(r.time_ms), "delay": r.delay, "meanDelay": r.delay})])
-                .unwrap_or_default();
-            let s = self.outbound_mgr.status(tag);
-            let type_name = s.as_ref().map(|s| s.type_name.as_str()).unwrap_or("Unknown");
-            json!({
-                "name": tag,
-                "type": type_name,
-                "udp": true,
-                "history": h,
-            })
-        }).collect();
+        // 注意：与 sing-box / stock Clash API 一致，"all" 是成员代理的 tag 名称
+        // 字符串数组，而不是嵌套的完整代理对象——Dashboard 会再用这些名字去
+        // /proxies 查详情。之前这里返回过对象数组，会让期望字符串数组的
+        // 客户端（如 metacubexd）渲染/比较失败。
         let mut entry = json!({
             "type": status.type_name,
             "name": status.name,
             "udp": true,
             "history": history,
-            "all": member_proxies,
         });
         if let Some(now) = &status.now {
             entry["now"] = json!(now);
+        }
+        if !status.all.is_empty() {
+            entry["all"] = json!(status.all);
         }
         entry
     }
@@ -2165,5 +2247,66 @@ mod tests {
         assert_eq!(r.delay, 123);
         h.delete("proxy1");
         assert!(h.load("proxy1").is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_cancelled_wakes_on_cancel() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+
+        let c2 = cancelled.clone();
+        let n2 = notify.clone();
+        let handle = tokio::spawn(async move {
+            wait_cancelled(&c2, &n2).await;
+        });
+
+        // 给等待任务一点时间先进入 notify.notified().await，
+        // 验证 notify_waiters() 之后能正确唤醒（而非永久挂起）。
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cancelled.store(true, Ordering::Relaxed);
+        notify.notify_waiters();
+
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("wait_cancelled should resolve promptly after cancellation")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_cancelled_already_true_returns_immediately() {
+        // 覆盖文档中提到的竞态规避写法：取消标志在等待前已为 true 时，
+        // 不应永久挂起在 notified().await 上。
+        let cancelled = AtomicBool::new(true);
+        let notify = Notify::new();
+        tokio::time::timeout(Duration::from_millis(200), wait_cancelled(&cancelled, &notify))
+            .await
+            .expect("should return immediately when already cancelled");
+    }
+
+    #[tokio::test]
+    async fn connection_tracker_cancel_by_id_sets_flag() {
+        let tracker = ConnectionTracker::new();
+        let rule_info = RuleInfo::default();
+        let guard = tracker.register(
+            ConnInfo {
+                network: "tcp",
+                host: "example.com",
+                source: "127.0.0.1:1234".parse().unwrap(),
+                dest_port: 443,
+                inbound: "mixed-in",
+                outbound: "direct",
+            },
+            &rule_info,
+        );
+        let (cancelled, notify) = guard.cancel_handle().expect("connection should be tracked");
+        assert!(!cancelled.load(Ordering::Relaxed));
+
+        tracker.cancel_by_id(guard.id);
+        assert!(cancelled.load(Ordering::Relaxed));
+
+        // notify_waiters 应能唤醒正在等待的 wait_cancelled
+        tokio::time::timeout(Duration::from_millis(200), wait_cancelled(&cancelled, &notify))
+            .await
+            .expect("wait_cancelled should resolve after cancel_by_id");
     }
 }
