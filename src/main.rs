@@ -5,7 +5,7 @@ use reflex::config::log::LogLevel;
 use std::{env, fs, net::IpAddr, process};
 use tracing::info;
 
-use reflex::ruleset::{CompiledRuleSet, LoadedRuleSet, MatchTarget, RuleSet};
+use reflex::ruleset::{AdGuardConvertReport, CompiledRuleSet, LoadedRuleSet, MatchTarget, RuleSet};
 
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
@@ -52,25 +52,90 @@ fn parse_output_flag(args: &[String]) -> anyhow::Result<String> {
     Err(anyhow::anyhow!("missing required flag: -o <output.rrs>"))
 }
 
-/// `reflex ruleset <input.json> -o <output.rrs>`
-/// 支持 sing-box JSON 格式（rule-set）和文本格式（.txt）
+/// 从参数列表中找到 `-t <value>` / `--type <value>`，返回显式指定的输入格式。
+/// 目前仅支持 `adguard`（AdGuardHome / AdBlock 风格 .txt 过滤规则）。
+fn parse_type_flag(args: &[String]) -> anyhow::Result<Option<String>> {
+    let mut iter = args.iter().peekable();
+    while let Some(a) = iter.next() {
+        if a == "-t" || a == "--type" {
+            return Ok(Some(iter.next().cloned().ok_or_else(|| {
+                anyhow::anyhow!("'-t/--type' requires an argument")
+            })?));
+        }
+        if let Some(val) = a.strip_prefix("-t=") {
+            return Ok(Some(val.to_string()));
+        }
+        if let Some(val) = a.strip_prefix("--type=") {
+            return Ok(Some(val.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+/// 打印 AdGuardHome/AdBlock 转换统计信息（解析行数 / 跳过行数）。
+fn print_adguard_report(report: &AdGuardConvertReport) {
+    if report.ignored_lines > 0 {
+        eprintln!(
+            "[adguard] parsed {}/{} lines ({} unsupported lines skipped: exceptions/cosmetic/path rules etc.)",
+            report.total_lines - report.ignored_lines,
+            report.total_lines,
+            report.ignored_lines
+        );
+    }
+}
+
+/// `reflex ruleset <input.json|input.txt> -o <output.rrs> [-t adguard]`
+/// 支持 sing-box JSON 格式（rule-set）、reflex 原生文本格式，
+/// 以及 AdGuardHome / AdBlock 风格的 .txt 过滤规则（自动探测，或用 `-t adguard` 强制指定）。
 fn cmd_ruleset(args: &[String]) -> anyhow::Result<()> {
-    // args[0] == "ruleset", args[1] == input, rest contains -o
+    // args[0] == "ruleset", args[1] == input, rest contains -o / -t
     if args.len() < 4 {
-        eprintln!("usage: reflex ruleset <input.json|input.txt> -o <output.rrs>");
+        eprintln!("usage: reflex ruleset <input.json|input.txt> -o <output.rrs> [-t adguard]");
         process::exit(1);
     }
     let input = &args[1];
-    let output = parse_output_flag(&args[2..])?;
+    let rest = &args[2..];
+    let output = parse_output_flag(rest)?;
+    let forced_type = parse_type_flag(rest)?;
 
     let src =
         fs::read_to_string(input).map_err(|e| anyhow::anyhow!("cannot read '{}': {}", input, e))?;
 
-    // 自动判断格式：JSON → sing-box rule-set，其他 → 文本规则集
-    let compiled = if input.ends_with(".json") || src.trim_start().starts_with('{') {
-        CompiledRuleSet::from_singbox_json(&src)?
-    } else {
-        CompiledRuleSet::from_text(&src)?
+    let compiled = match forced_type.as_deref() {
+        // 显式指定 -t adguard：按 AdGuardHome / AdBlock 风格解析
+        Some("adguard") => {
+            let report = CompiledRuleSet::from_adguard_text(&src)?;
+            print_adguard_report(&report);
+            report.ruleset
+        }
+        Some(other) => {
+            return Err(anyhow::anyhow!(
+                "unsupported source type '{}': available: adguard",
+                other
+            ));
+        }
+        // 未指定 -t：自动判断格式
+        None if input.ends_with(".json") || src.trim_start().starts_with('{') => {
+            // JSON → sing-box rule-set（Source Rule Set）
+            CompiledRuleSet::from_singbox_json(&src)?
+        }
+        None => {
+            // 先尝试 reflex 原生 "key: value" 文本格式；
+            // 解析失败则视为 AdGuardHome / AdBlock 风格的 .txt 过滤规则
+            // （参考 sing-box `rule-set convert -t adguard` 的能力）。
+            match CompiledRuleSet::from_text(&src) {
+                Ok(c) => c,
+                Err(_) => {
+                    eprintln!(
+                        "[info] '{}' 不是 reflex 原生文本规则格式，按 AdGuardHome/AdBlock 规则解析",
+                        input
+                    );
+                    let report = CompiledRuleSet::from_adguard_text(&src)?;
+                    print_adguard_report(&report);
+                    report.ruleset
+                }
+            }
+        }
     };
 
     let total = compiled.total_entries();
@@ -475,8 +540,10 @@ PROXY MODE:
     -h, --help
 
 RULESET COMMANDS:
-  reflex ruleset <input.json|input.txt> -o <output.rrs>
-        Compile a sing-box JSON rule-set or text rule-set to binary .rrs
+  reflex ruleset <input.json|input.txt> -o <output.rrs> [-t adguard]
+        Compile a sing-box JSON rule-set, reflex text rule-set, or
+        AdGuardHome/AdBlock-style .txt filter list to binary .rrs
+        (.txt input auto-detects AdGuardHome format; use -t adguard to force it)
 
   reflex check <config.json>
         Validate config file without starting the proxy
@@ -493,6 +560,7 @@ EXAMPLES:
   reflex -c /etc/reflex/config.json       # absolute config path
   reflex ruleset geosite-cn.json -o rules/geosite-cn.rrs
   reflex ruleset rules/cn.txt    -o rules/cn.rrs
+  reflex ruleset adguard-base.txt -o rules/adguard-base.rrs -t adguard
   reflex check   config.json
   reflex inspect rules/geosite-cn.rrs
   reflex test-rule rules/geosite-cn.rrs www.baidu.com
