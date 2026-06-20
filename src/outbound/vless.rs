@@ -31,8 +31,12 @@ use tracing::debug;
 
 use crate::{
     config::outbound::{VlessOutboundConfig, VlessTransportConfig, WsTransportConfig},
+    dns::DnsResolver,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{apply_mark_to_tcp, relay, set_tcp_opts, tls::build_client_config, Outbound},
+    outbound::{
+        apply_mark_to_tcp, relay, resolve_server_addr, set_tcp_opts, tls::build_client_config,
+        Outbound,
+    },
 };
 
 use super::reality::reality_connect;
@@ -42,6 +46,8 @@ pub struct VlessOutbound {
     tls_config: Arc<rustls::ClientConfig>,
     /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
     routing_mark: u32,
+    /// 用于解析 `server` 域名（走 dns.proxy_domain_resolver），None 时回退系统 DNS
+    resolver: Option<Arc<DnsResolver>>,
 }
 
 impl VlessOutbound {
@@ -75,7 +81,13 @@ impl VlessOutbound {
             config,
             tls_config,
             routing_mark: 0,
+            resolver: None,
         })
+    }
+
+    pub fn with_resolver(mut self, resolver: Arc<DnsResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     pub fn with_mark(mut self, mark: u32) -> Self {
@@ -132,10 +144,9 @@ impl VlessOutbound {
         let sni = self.tls_sni();
         let tls_enabled = self.config.tls.as_ref().map_or(false, |t| t.enabled);
 
-        let addr: SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
+        let addr = resolve_server_addr(server, port, self.resolver.as_ref())
+            .await
+            .map_err(|e| anyhow::anyhow!("DNS failed for {server}: {e}"))?;
 
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
@@ -176,10 +187,9 @@ impl VlessOutbound {
         let port = self.config.server_port;
         let sni = self.tls_sni();
 
-        let addr: SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
+        let addr = resolve_server_addr(server, port, self.resolver.as_ref())
+            .await
+            .map_err(|e| anyhow::anyhow!("DNS failed for {server}: {e}"))?;
 
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
@@ -211,10 +221,9 @@ impl VlessOutbound {
         let server = &self.config.server;
         let port = self.config.server_port;
 
-        let addr: SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
+        let addr = resolve_server_addr(server, port, self.resolver.as_ref())
+            .await
+            .map_err(|e| anyhow::anyhow!("DNS failed for {server}: {e}"))?;
 
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
@@ -279,6 +288,7 @@ impl VlessOutbound {
                 tls_cfg.as_ref(),
                 &HashMap::new(),
                 self.routing_mark,
+                self.resolver.clone(),
             )
             .await?;
             return Ok(Box::new(VlessTcpStream::new(stream, header)));
@@ -312,10 +322,9 @@ impl VlessOutbound {
                 // 明文 TCP（tls 为 None 或 enabled=false）
                 let server = &self.config.server;
                 let port = self.config.server_port;
-                let addr: SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
-                    .await?
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
+                let addr = resolve_server_addr(server, port, self.resolver.as_ref())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("DNS failed for {server}: {e}"))?;
                 let tcp = TcpStream::connect(addr).await?;
                 set_tcp_opts(&tcp)?;
                 apply_mark_to_tcp(&tcp, self.routing_mark)?;

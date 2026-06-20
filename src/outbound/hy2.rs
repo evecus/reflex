@@ -120,6 +120,8 @@ pub struct Hy2Outbound {
     cached_conn: Arc<Mutex<Option<CachedConn>>>,
     /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
     routing_mark: u32,
+    /// 用于解析 `server` 域名（走 dns.proxy_domain_resolver），None 时回退系统 DNS
+    resolver: Option<Arc<crate::dns::DnsResolver>>,
 }
 
 impl Hy2Outbound {
@@ -131,7 +133,13 @@ impl Hy2Outbound {
             udp_session_id: AtomicU32::new(0),
             cached_conn: Arc::new(Mutex::new(None)),
             routing_mark: 0,
+            resolver: None,
         })
+    }
+
+    pub fn with_resolver(mut self, resolver: Arc<crate::dns::DnsResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     pub fn with_mark(mut self, mark: u32) -> Self {
@@ -172,10 +180,9 @@ impl Hy2Outbound {
         let port = self.config.server_port;
         let sni = self.config.tls.server_name.as_deref().unwrap_or(server);
 
-        let addr: SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
+        let addr = crate::outbound::resolve_server_addr(server, port, self.resolver.as_ref())
+            .await
+            .map_err(|e| anyhow::anyhow!("DNS failed for {server}: {e}"))?;
 
         let bind: SocketAddr = if addr.is_ipv6() {
             "[::]:0"

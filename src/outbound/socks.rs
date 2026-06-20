@@ -11,6 +11,7 @@
 //! - UDP ASSOCIATE 仅 SOCKS5 支持；SOCKS4/4a 收到 UDP 请求时记录警告并丢弃
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -20,10 +21,11 @@ use tracing::{debug, warn};
 
 use crate::{
     config::outbound::{SocksOutboundConfig, SocksVersion},
+    dns::DnsResolver,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
     outbound::{
-        apply_mark_to_tcp, apply_mark_to_udp, relay, resolve_target, set_tcp_opts, Outbound,
-        OutboundStatus,
+        apply_mark_to_tcp, apply_mark_to_udp, relay, resolve_server_addr, resolve_target,
+        set_tcp_opts, Outbound, OutboundStatus,
     },
 };
 
@@ -61,6 +63,8 @@ pub struct SocksOutbound {
     version: SocksVersion,
     /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
     routing_mark: u32,
+    /// 用于解析 `server` 域名（走 dns.proxy_domain_resolver），None 时回退系统 DNS
+    resolver: Option<Arc<DnsResolver>>,
 }
 
 impl SocksOutbound {
@@ -70,7 +74,13 @@ impl SocksOutbound {
             config,
             version,
             routing_mark: 0,
+            resolver: None,
         })
+    }
+
+    pub fn with_resolver(mut self, resolver: Arc<DnsResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     pub fn with_mark(mut self, mark: u32) -> Self {
@@ -81,13 +91,13 @@ impl SocksOutbound {
     // ── 连接到代理服务器 ──────────────────────────────────────────────────────
 
     async fn connect_proxy(&self) -> anyhow::Result<TcpStream> {
-        let addr: SocketAddr = tokio::net::lookup_host(format!(
-            "{}:{}",
-            self.config.server, self.config.server_port
-        ))
-        .await?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("socks: DNS lookup failed for {}", self.config.server))?;
+        let addr = resolve_server_addr(
+            &self.config.server,
+            self.config.server_port,
+            self.resolver.as_ref(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("socks: DNS lookup failed for {}: {e}", self.config.server))?;
         let stream = TcpStream::connect(addr).await?;
         set_tcp_opts(&stream)?;
         apply_mark_to_tcp(&stream, self.routing_mark)?;
@@ -484,13 +494,13 @@ impl SocksOutbound {
 
         // 如果代理返回 0.0.0.0，则用代理服务器 IP 代替
         let relay_addr = if relay_addr.ip().is_unspecified() {
-            let proxy_addr: SocketAddr = tokio::net::lookup_host(format!(
-                "{}:{}",
-                self.config.server, self.config.server_port
-            ))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("socks5 udp: cannot resolve proxy host"))?;
+            let proxy_addr = resolve_server_addr(
+                &self.config.server,
+                self.config.server_port,
+                self.resolver.as_ref(),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("socks5 udp: cannot resolve proxy host"))?;
             SocketAddr::new(proxy_addr.ip(), relay_addr.port())
         } else {
             relay_addr

@@ -36,6 +36,16 @@ pub struct DnsConfig {
     #[serde(default)]
     pub strategy: ResolveStrategy,
 
+    /// 用于解析「代理出站节点服务器域名」的 DNS server tag。
+    /// 即当 outbound（如 vmess/trojan/vless/hysteria2 等）的 `server` 字段是域名而非 IP 时，
+    /// 用哪个 DNS server 来解析它。
+    /// 不单独配置 strategy，统一使用上面的全局 `strategy`。
+    /// 等价于 sing-box 的 `route.default_domain_resolver`，但写法更简单：
+    /// 只需填 server tag 字符串，例如 `"proxy_domain_resolver": "local"`。
+    /// 不填则回退到 dns.final 对应的默认上游解析。
+    #[serde(default)]
+    pub proxy_domain_resolver: Option<String>,
+
     /// 是否禁用系统 hosts 文件
     #[serde(default)]
     pub disable_hosts: bool,

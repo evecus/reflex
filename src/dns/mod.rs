@@ -53,6 +53,9 @@ pub struct DnsResolver {
     upstreams: HashMap<String, Arc<DnsUpstream>>,
     /// 生效的解析策略（由 global.ipv6 + dns.strategy 合并决定）
     pub strategy: ResolveStrategy,
+    /// `dns.proxy_domain_resolver` 指定的 server tag，用于解析代理出站节点的服务器域名。
+    /// 构造时已校验该 tag 存在于 upstreams 中。
+    proxy_domain_resolver: Option<String>,
 }
 
 impl DnsResolver {
@@ -166,6 +169,13 @@ impl DnsResolver {
             .ok_or_else(|| anyhow::anyhow!("dns.final '{}' not found", config.r#final))?
             .clone();
 
+        // `proxy_domain_resolver` 必须引用一个已存在的 server tag
+        if let Some(tag) = &config.proxy_domain_resolver {
+            if !upstreams.contains_key(tag) {
+                anyhow::bail!("dns.proxy_domain_resolver '{}' not found in dns.servers", tag);
+            }
+        }
+
         // ── 构建缓存 ──────────────────────────────────────────────────────────
         let cache = if config.disable_cache {
             None
@@ -202,6 +212,7 @@ impl DnsResolver {
             cache,
             upstreams,
             strategy: config.strategy,
+            proxy_domain_resolver: config.proxy_domain_resolver.clone(),
         })
     }
 
@@ -263,6 +274,16 @@ impl DnsResolver {
             });
         self.resolve_domain_with_strategy(host, self.strategy, &upstream)
             .await
+    }
+
+    /// 解析「代理出站节点服务器域名」专用入口。
+    /// 若配置了 `dns.proxy_domain_resolver`，走该 server tag（沿用全局 `strategy`）；
+    /// 否则回退到 `resolve_domain`（按规则 + dns.final 默认上游解析，行为与之前一致）。
+    pub async fn resolve_proxy_domain(&self, host: &str) -> anyhow::Result<std::net::IpAddr> {
+        match &self.proxy_domain_resolver {
+            Some(tag) => self.resolve_domain_via(host, tag).await,
+            None => self.resolve_domain(host).await,
+        }
     }
 
     /// 使用指定 server tag 的 DNS 上游解析域名。

@@ -84,6 +84,8 @@ pub struct TuicOutbound {
     cached: Arc<Mutex<Option<CachedConn>>>,
     /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
     routing_mark: u32,
+    /// 用于解析 `server` 域名（走 dns.proxy_domain_resolver），None 时回退系统 DNS
+    resolver: Option<Arc<crate::dns::DnsResolver>>,
 }
 
 impl TuicOutbound {
@@ -99,7 +101,13 @@ impl TuicOutbound {
             udp_session: AtomicU16::new(0),
             cached: Arc::new(Mutex::new(None)),
             routing_mark: 0,
+            resolver: None,
         })
+    }
+
+    pub fn with_resolver(mut self, resolver: Arc<crate::dns::DnsResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     pub fn with_mark(mut self, mark: u32) -> Self {
@@ -138,10 +146,9 @@ impl TuicOutbound {
             .as_deref()
             .unwrap_or(server.as_str());
 
-        let addr: SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("tuic DNS failed for {server}"))?;
+        let addr = crate::outbound::resolve_server_addr(server, port, self.resolver.as_ref())
+            .await
+            .map_err(|e| anyhow::anyhow!("tuic DNS failed for {server}: {e}"))?;
 
         let bind: SocketAddr = if addr.is_ipv6() {
             "[::]:0"

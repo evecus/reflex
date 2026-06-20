@@ -631,10 +631,19 @@ pub struct ShadowsocksOutbound {
     routing_mark: u32,
     /// 多路复用连接池（multiplex.enabled 时非空）
     mux_pool: Option<Arc<crate::outbound::smux::MultiplexPool>>,
+    /// 用于解析 `server` 域名（走 dns.proxy_domain_resolver），None 时回退系统 DNS
+    resolver: Option<Arc<crate::dns::DnsResolver>>,
 }
 
 impl ShadowsocksOutbound {
     pub fn new(config: ShadowsocksOutboundConfig) -> anyhow::Result<Self> {
+        Self::new_with_resolver(config, None)
+    }
+
+    pub fn new_with_resolver(
+        config: ShadowsocksOutboundConfig,
+        resolver: Option<Arc<crate::dns::DnsResolver>>,
+    ) -> anyhow::Result<Self> {
         let method = Method::from_str(&config.method)?;
 
         let key_material = if method.is_2022() {
@@ -672,13 +681,18 @@ impl ShadowsocksOutbound {
             let mux_cfg = config.multiplex.clone().unwrap_or_default();
             let server = config.server.clone();
             let port = config.server_port;
+            let dial_resolver = resolver.clone();
             let pool = crate::outbound::smux::MultiplexPool::new(mux_cfg, move || {
                 let server = server.clone();
+                let dial_resolver = dial_resolver.clone();
                 async move {
-                    let addr: SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
-                        .await?
-                        .next()
-                        .ok_or_else(|| anyhow::anyhow!("smux dial: DNS failed for {server}"))?;
+                    let addr = crate::outbound::resolve_server_addr(
+                        &server,
+                        port,
+                        dial_resolver.as_ref(),
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!("smux dial: DNS failed for {server}: {e}"))?;
                     let tcp = tokio::net::TcpStream::connect(addr).await?;
                     let b: Box<dyn crate::outbound::smux::AsyncReadWrite> = Box::new(tcp);
                     Ok(b)
@@ -696,6 +710,7 @@ impl ShadowsocksOutbound {
             tls_config,
             routing_mark: 0,
             mux_pool,
+            resolver,
         })
     }
 
@@ -707,10 +722,9 @@ impl ShadowsocksOutbound {
     async fn server_addr(&self) -> anyhow::Result<SocketAddr> {
         let host = &self.config.server;
         let port = self.config.server_port;
-        tokio::net::lookup_host(format!("{host}:{port}"))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("DNS lookup failed for {host}"))
+        crate::outbound::resolve_server_addr(host, port, self.resolver.as_ref())
+            .await
+            .map_err(|e| anyhow::anyhow!("DNS lookup failed for {host}: {e}"))
     }
 
     fn random_salt(&self) -> Vec<u8> {
@@ -788,6 +802,7 @@ impl ShadowsocksOutbound {
             self.config.tls.as_ref(),
             &HashMap::new(),
             self.routing_mark,
+            self.resolver.clone(),
         )
         .await?;
 
@@ -833,10 +848,9 @@ impl ShadowsocksOutbound {
             .and_then(|t| t.server_name.as_deref())
             .unwrap_or(server.as_str());
 
-        let addr: std::net::SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
+        let addr = crate::outbound::resolve_server_addr(server, port, self.resolver.as_ref())
+            .await
+            .map_err(|e| anyhow::anyhow!("DNS failed for {server}: {e}"))?;
 
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;

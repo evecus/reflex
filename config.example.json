@@ -74,6 +74,10 @@
     ],
     "final": "remote",
     "strategy": "ipv4_only",
+    // 代理出站节点的 server 字段是域名时，用哪个 DNS server tag 解析它。
+    // 等价于 sing-box route.default_domain_resolver，但写法更简单（不需要单独配置 strategy，
+    // 沿用上面的全局 "strategy"）。
+    "proxy_domain_resolver": "local",
     "disable_cache": false,
     "cache_capacity": 4096,
     "cache_ttl_max": 3600,

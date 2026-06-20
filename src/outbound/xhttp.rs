@@ -70,6 +70,7 @@ pub async fn connect(
     tls: Option<&TlsConfig>,
     extra_headers: &HashMap<String, String>,
     routing_mark: u32,
+    resolver: Option<Arc<crate::dns::DnsResolver>>,
 ) -> anyhow::Result<XhttpStream> {
     let tls_enabled = tls.map_or(false, |t| t.enabled);
     let scheme = if tls_enabled { "https" } else { "http" };
@@ -84,7 +85,7 @@ pub async fn connect(
     let path = normalize_path(raw_path);
     let base_url = format!("{scheme}://{server}:{port}{path}");
 
-    let client = build_http_client(tls, cfg, routing_mark)?;
+    let client = build_http_client(tls, cfg, routing_mark, resolver)?;
 
     let mode = cfg.mode.as_deref().unwrap_or("packet-up");
 
@@ -135,10 +136,16 @@ struct MarkedConnector {
     tls: Option<Arc<rustls::ClientConfig>>,
     #[cfg(not(feature = "outbound-net"))]
     _tls: (),
+    /// 用于解析连接目标域名（走 dns.proxy_domain_resolver），None 时回退系统 DNS
+    resolver: Option<Arc<crate::dns::DnsResolver>>,
 }
 
 impl MarkedConnector {
-    fn new(mark: u32, tls_cfg: Option<Arc<rustls::ClientConfig>>) -> Self {
+    fn new(
+        mark: u32,
+        tls_cfg: Option<Arc<rustls::ClientConfig>>,
+        resolver: Option<Arc<crate::dns::DnsResolver>>,
+    ) -> Self {
         Self {
             mark,
             #[cfg(feature = "outbound-net")]
@@ -147,6 +154,7 @@ impl MarkedConnector {
             _tls: {
                 let _ = tls_cfg;
             },
+            resolver,
         }
     }
 }
@@ -257,6 +265,7 @@ impl Service<Uri> for MarkedConnector {
         let tls_cfg = self.tls.clone();
         #[cfg(not(feature = "outbound-net"))]
         let tls_cfg: Option<Arc<rustls::ClientConfig>> = None;
+        let resolver = self.resolver.clone();
 
         Box::pin(async move {
             let host = uri
@@ -270,11 +279,10 @@ impl Service<Uri> for MarkedConnector {
                     80
                 });
 
-            // DNS 解析
-            let addr: SocketAddr = tokio::net::lookup_host(format!("{host}:{port}"))
-                .await?
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("xhttp: DNS failed for {host}"))?;
+            // DNS 解析（优先走 dns.proxy_domain_resolver，未注入则回退系统 DNS）
+            let addr = crate::outbound::resolve_server_addr(host, port, resolver.as_ref())
+                .await
+                .map_err(|e| anyhow::anyhow!("xhttp: DNS failed for {host}: {e}"))?;
 
             // TCP connect → 打 SO_MARK → 设 TCP 选项
             let tcp = TcpStream::connect(addr).await?;
@@ -639,6 +647,7 @@ fn build_http_client(
     tls: Option<&TlsConfig>,
     _cfg: &XhttpTransportConfig,
     routing_mark: u32,
+    resolver: Option<Arc<crate::dns::DnsResolver>>,
 ) -> anyhow::Result<XhttpClient> {
     let tls_enabled = tls.map_or(false, |t| t.enabled);
 
@@ -658,7 +667,7 @@ fn build_http_client(
         None
     };
 
-    let connector = MarkedConnector::new(routing_mark, rustls_cfg);
+    let connector = MarkedConnector::new(routing_mark, rustls_cfg, resolver);
 
     let client = Client::builder(hyper_util::rt::TokioExecutor::new())
         .http2_only(false)

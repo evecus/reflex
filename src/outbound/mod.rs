@@ -427,6 +427,31 @@ where
 
 // ── 目标地址解析 ──────────────────────────────────────────────────────────────
 
+/// 解析「代理出站节点自身的服务器地址」（即各协议 outbound 配置里的 `server` 字段）。
+///
+/// - 若 `server` 已是 IP，直接返回，不查询 DNS。
+/// - 若提供了 `resolver`，使用 `DnsResolver::resolve_proxy_domain`
+///   （即 `dns.proxy_domain_resolver` 指定的上游，未配置则回退 dns.final 默认上游）。
+/// - 若未注入 `resolver`（如未启用内置 DNS 模块），回退到系统 DNS，行为与之前一致。
+pub async fn resolve_server_addr(
+    server: &str,
+    port: u16,
+    resolver: Option<&Arc<DnsResolver>>,
+) -> anyhow::Result<SocketAddr> {
+    if let Ok(ip) = server.parse::<std::net::IpAddr>() {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    if let Some(r) = resolver {
+        let ip = r.resolve_proxy_domain(server).await?;
+        Ok(SocketAddr::new(ip, port))
+    } else {
+        tokio::net::lookup_host((server, port))
+            .await?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("DNS lookup failed for {server}"))
+    }
+}
+
 pub async fn resolve_target(target: &Target) -> anyhow::Result<SocketAddr> {
     match target {
         Target::Socket(addr) => Ok(*addr),

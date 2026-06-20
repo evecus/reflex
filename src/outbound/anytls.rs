@@ -728,6 +728,8 @@ pub struct AnyTlsClient {
     routing_mark: u32,
     idle_timeout: Duration,
     min_idle_session: usize,
+    /// 用于解析 `server` 域名（走 dns.proxy_domain_resolver），None 时回退系统 DNS
+    resolver: Option<Arc<crate::dns::DnsResolver>>,
 }
 
 impl AnyTlsClient {
@@ -735,6 +737,7 @@ impl AnyTlsClient {
         config: AnyTlsOutboundConfig,
         tls_config: Arc<rustls::ClientConfig>,
         routing_mark: u32,
+        resolver: Option<Arc<crate::dns::DnsResolver>>,
     ) -> anyhow::Result<Arc<Self>> {
         let idle_check_interval = config
             .idle_session_check_interval
@@ -762,6 +765,7 @@ impl AnyTlsClient {
             routing_mark,
             idle_timeout,
             min_idle_session,
+            resolver,
         });
 
         // spawn 空闲清理任务
@@ -822,13 +826,13 @@ impl AnyTlsClient {
     }
 
     async fn dial_tls(&self) -> anyhow::Result<Box<dyn crate::outbound::AsyncReadWrite>> {
-        let addr = tokio::net::lookup_host(format!(
-            "{}:{}",
-            self.config.server, self.config.server_port
-        ))
-        .await?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("DNS failed for {}", self.config.server))?;
+        let addr = crate::outbound::resolve_server_addr(
+            &self.config.server,
+            self.config.server_port,
+            self.resolver.as_ref(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("DNS failed for {}: {e}", self.config.server))?;
 
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
@@ -1046,22 +1050,48 @@ async fn read_uot_packet<R: AsyncRead + Unpin>(reader: &mut R) -> anyhow::Result
 pub struct AnyTlsOutbound {
     config: AnyTlsOutboundConfig,
     client: Arc<AnyTlsClient>,
+    routing_mark: u32,
+    resolver: Option<Arc<crate::dns::DnsResolver>>,
 }
 
 impl AnyTlsOutbound {
     pub fn new(config: AnyTlsOutboundConfig) -> anyhow::Result<Self> {
         let tls_config = build_client_config(&config.tls)?;
-        let client = AnyTlsClient::new(config.clone(), tls_config, 0)?;
-        Ok(Self { config, client })
+        let client = AnyTlsClient::new(config.clone(), tls_config, 0, None)?;
+        Ok(Self {
+            config,
+            client,
+            routing_mark: 0,
+            resolver: None,
+        })
+    }
+
+    pub fn with_resolver(self, resolver: Arc<crate::dns::DnsResolver>) -> Self {
+        let tls_config = build_client_config(&self.config.tls).expect("TLS config rebuild failed");
+        let client = AnyTlsClient::new(
+            self.config.clone(),
+            tls_config,
+            self.routing_mark,
+            Some(resolver.clone()),
+        )
+        .expect("client rebuild failed");
+        Self {
+            config: self.config,
+            client,
+            routing_mark: self.routing_mark,
+            resolver: Some(resolver),
+        }
     }
 
     pub fn with_mark(self, mark: u32) -> Self {
         let tls_config = build_client_config(&self.config.tls).expect("TLS config rebuild failed");
-        let client = AnyTlsClient::new(self.config.clone(), tls_config, mark)
+        let client = AnyTlsClient::new(self.config.clone(), tls_config, mark, self.resolver.clone())
             .expect("client rebuild failed");
         Self {
             config: self.config,
             client,
+            routing_mark: mark,
+            resolver: self.resolver,
         }
     }
 }

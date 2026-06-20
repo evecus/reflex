@@ -28,8 +28,12 @@ use tracing::debug;
 
 use crate::{
     config::outbound::{TrojanOutboundConfig, TrojanTransportConfig, WsTransportConfig},
+    dns::DnsResolver,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{apply_mark_to_tcp, relay, set_tcp_opts, tls::build_client_config, Outbound},
+    outbound::{
+        apply_mark_to_tcp, relay, resolve_server_addr, set_tcp_opts, tls::build_client_config,
+        Outbound,
+    },
 };
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -56,6 +60,8 @@ pub struct TrojanOutbound {
     tls_config: Arc<rustls::ClientConfig>,
     /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
     routing_mark: u32,
+    /// 用于解析 `server` 域名（走 dns.proxy_domain_resolver），None 时回退系统 DNS
+    resolver: Option<Arc<DnsResolver>>,
 }
 
 impl TrojanOutbound {
@@ -68,7 +74,13 @@ impl TrojanOutbound {
             key,
             tls_config,
             routing_mark: 0,
+            resolver: None,
         })
+    }
+
+    pub fn with_resolver(mut self, resolver: Arc<DnsResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     pub fn with_mark(mut self, mark: u32) -> Self {
@@ -201,6 +213,7 @@ impl TrojanOutbound {
                     },
                     &HashMap::new(),
                     self.routing_mark,
+                    self.resolver.clone(),
                 )
                 .await?;
                 Ok(Box::new(TrojanTcpStream::new(stream, header)))
@@ -211,13 +224,13 @@ impl TrojanOutbound {
     // ── 辅助 ──────────────────────────────────────────────────────────────────
 
     async fn resolve_server(&self) -> anyhow::Result<SocketAddr> {
-        tokio::net::lookup_host(format!(
-            "{}:{}",
-            self.config.server, self.config.server_port
-        ))
-        .await?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("DNS failed for {}", self.config.server))
+        resolve_server_addr(
+            &self.config.server,
+            self.config.server_port,
+            self.resolver.as_ref(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("DNS failed for {}: {e}", self.config.server))
     }
 
     fn tls_sni(&self) -> &str {
