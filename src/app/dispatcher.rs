@@ -543,6 +543,10 @@ async fn run_udp_session(
         &rule_info,
     );
 
+    // 取消句柄必须在 conn_guard 被移入下面的 lifetime_guards（从而被 Box 包装
+    // 移交给 packet）之前取出，否则 conn_guard 已被移动，无法再调用其方法。
+    let cancel_handle = conn_guard.cancel_handle();
+
     // 获取实时计数器，用于 UDP 字节统计
     let (live_up, live_down) = conn_guard.live_counters().unwrap_or_else(|| {
         (
@@ -579,8 +583,25 @@ async fn run_udp_session(
                 upstream_rx: Some(data_rx),
                 lifetime_guards: vec![Box::new(conn_guard), Box::new(_guard)],
             };
-            if let Err(e) = ob.handle_udp(packet).await {
-                debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
+            let handle_fut = ob.handle_udp(packet);
+            match cancel_handle {
+                Some((cancelled, notify)) => {
+                    tokio::select! {
+                        res = handle_fut => {
+                            if let Err(e) = res {
+                                debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
+                            }
+                        }
+                        _ = super::clash_api::wait_cancelled(&cancelled, &notify) => {
+                            debug!(src=%src, dst=%target, outbound=%outbound_tag, "udp session terminated via clash api");
+                        }
+                    }
+                }
+                None => {
+                    if let Err(e) = handle_fut.await {
+                        debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
+                    }
+                }
             }
             use std::sync::atomic::Ordering;
             live_up.fetch_add(up_bytes, Ordering::Relaxed);
@@ -643,7 +664,22 @@ async fn dispatch_tcp(
                     std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
                 )
             });
-            match ob.handle_tcp_live(conn, live_up, live_down).await {
+            // 取消句柄需在 conn_guard 仍存于 tracker 中时获取（select! 期间
+            // conn_guard 本身保持存活，直到下面这个代码块结束才 Drop）。
+            let cancel_handle = conn_guard.cancel_handle();
+            let result = match cancel_handle {
+                Some((cancelled, notify)) => {
+                    tokio::select! {
+                        res = ob.handle_tcp_live(conn, live_up, live_down) => res,
+                        _ = super::clash_api::wait_cancelled(&cancelled, &notify) => {
+                            debug!(tag=%tag, "tcp connection terminated via clash api");
+                            Ok((0, 0))
+                        }
+                    }
+                }
+                None => ob.handle_tcp_live(conn, live_up, live_down).await,
+            };
+            match result {
                 Ok((up, down)) => {
                     guard.add_bytes(up, down);
                     Ok(())
@@ -698,7 +734,19 @@ async fn dispatch_udp(
                 },
                 &rule_info,
             );
-            let result = ob.handle_udp(packet).await;
+            let cancel_handle = conn_guard.cancel_handle();
+            let result = match cancel_handle {
+                Some((cancelled, notify)) => {
+                    tokio::select! {
+                        res = ob.handle_udp(packet) => res,
+                        _ = super::clash_api::wait_cancelled(&cancelled, &notify) => {
+                            debug!(tag=%tag, "udp packet dispatch terminated via clash api");
+                            Ok(())
+                        }
+                    }
+                }
+                None => ob.handle_udp(packet).await,
+            };
             drop(conn_guard);
             result
         }
