@@ -43,6 +43,7 @@ use tracing::{debug, info};
 
 use crate::{
     app::{outbound_mgr::OutboundManager, ruleset_registry::RuleSetRegistry, stats::Stats},
+    clash_mode::ClashMode,
     config::{
         experimental::ClashApiConfig, inbound::InboundConfig, log::LogLevel, route::RouteConfig,
     },
@@ -313,7 +314,9 @@ pub struct ClashApi {
     outbound_mgr: Arc<OutboundManager>,
     stats: Arc<Stats>,
     route_config: Arc<RouteConfig>,
-    mode: Arc<RwLock<String>>,
+    /// Clash API 当前模式：与 Router、DnsResolver 共享同一个实例，
+    /// 这样 PATCH /configs 写入的模式变化才能被 `clash_mode` 规则条件实时感知。
+    mode: Arc<ClashMode>,
     mode_list: Vec<String>,
     delay_history: Arc<DelayHistory>,
     conn_tracker: Arc<ConnectionTracker>,
@@ -340,8 +343,13 @@ impl ClashApi {
         conn_tracker: Arc<ConnectionTracker>,
         rs_registry: Arc<RuleSetRegistry>,
         dns_resolver: Option<Arc<crate::dns::DnsResolver>>,
+        clash_mode: Arc<ClashMode>,
     ) -> Self {
-        let mode = Arc::new(RwLock::new(config.default_mode.clone()));
+        // clash_mode 由调用方（app/mod.rs）创建并以同一个实例同时传给
+        // Router、DnsResolver、ClashApi 三者；这里只是接收引用，不再自己
+        // 创建一份独立的 RwLock<String>（那样会导致三者各看各的模式值，
+        // PATCH /configs 改了也不会反映到路由判断上）。
+        let mode = clash_mode;
 
         let mut mode_list = config.mode_list.clone();
         if mode_list.is_empty() {
@@ -600,7 +608,7 @@ impl ClashApi {
 
     fn get_configs(&self) -> HttpResponse {
         use crate::config::inbound::InboundConfig as IB;
-        let mode = self.mode.read().unwrap().clone();
+        let mode = self.mode.get();
 
         // 从 inbound 配置中提取各协议端口
         let mut mixed_port: u16 = 0;
@@ -674,7 +682,7 @@ impl ClashApi {
                 .iter()
                 .any(|m| m.eq_ignore_ascii_case(&mode_str));
             if valid {
-                *self.mode.write().unwrap() = mode_str;
+                self.mode.set(mode_str);
             }
         }
         empty_response(204, "No Content")

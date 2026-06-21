@@ -1,4 +1,5 @@
 pub mod app;
+pub mod clash_mode;
 pub mod config;
 pub mod dns;
 pub mod experimental;

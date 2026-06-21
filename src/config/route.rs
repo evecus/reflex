@@ -138,6 +138,23 @@ pub struct RouteRuleConfig {
     #[serde(default)]
     pub invert: bool,
 
+    // ── Clash API 模式 ────────────────────────────────────────────────────
+    /// 仅当 Clash API 当前模式（`PATCH /configs` 设置的 `mode`）等于该值时才
+    /// 命中本规则，大小写不敏感。与 sing-box `clash_mode` 规则条件对齐。
+    ///
+    /// 和 sing-box 一样，"global"/"direct" 这些模式名本身没有任何硬编码行为——
+    /// 是否在某个模式下强制走某个 outbound，完全由你自己写规则决定：
+    /// ```json
+    /// { "clash_mode": "global", "outbound": "我的全局选择器" }
+    /// { "clash_mode": "direct", "outbound": "direct" }
+    /// ```
+    /// 把这两条放在规则列表最前面，就能让 Dashboard 上的模式切换按钮真正生效。
+    ///
+    /// 该条件作为硬性前置过滤（类似 `inbound`/`network`/`protocol`），不受
+    /// `invert` 影响。
+    #[serde(default)]
+    pub clash_mode: Option<String>,
+
     // ── 嗅探 ─────────────────────────────────────────────────
     /// 命中本规则时先对 TCP 流做协议嗅探，
     /// 用嗅探结果更新目标域名后重新路由。
@@ -229,6 +246,34 @@ pub struct RouteRuleConfig {
     /// 当 `sniff = true` 或 `hijack_dns = true` 时该字段可留空。
     #[serde(default)]
     pub outbound: String,
+
+    // ── 动作精细化选项（对齐 sing-box route action 的扩展字段）──────────
+    /// 命中后改写连接的目标地址（IP 或域名），原始目标仅用于规则匹配，
+    /// 不影响后续转发。对齐 sing-box `override_address`。
+    ///
+    /// 典型用法：把某个域名/IP 重定向到局域网内的另一台机器：
+    /// ```json
+    /// { "domain": "printer.local", "override_address": "192.168.1.50", "outbound": "direct" }
+    /// ```
+    /// 注意：会在 `sniff`/`resolve` 之后、最终建立连接之前生效；多条规则都设置
+    /// 该字段时，以最终命中（决定 outbound）的那条规则为准。
+    #[serde(default)]
+    pub override_address: Option<String>,
+
+    /// 命中后改写连接的目标端口。对齐 sing-box `override_port`。
+    /// 可与 `override_address` 配合使用，也可单独使用（只改端口不改地址）。
+    #[serde(default)]
+    pub override_port: Option<u16>,
+
+    /// 命中后覆盖该连接的 UDP 会话空闲超时（秒）。对齐 sing-box `udp_timeout`。
+    /// 仅对 UDP 流量生效，未设置时使用全局默认值。
+    ///
+    /// 典型用法：游戏/直播等需要长连接保活的 UDP 流量适当调大超时：
+    /// ```json
+    /// { "domain_suffix": [".game.example.com"], "network": "udp", "udp_timeout": 300, "outbound": "direct" }
+    /// ```
+    #[serde(default)]
+    pub udp_timeout: Option<u64>,
 }
 
 impl RouteRuleConfig {
@@ -247,6 +292,7 @@ impl RouteRuleConfig {
             || !self.port.is_empty()
             || !self.port_range.is_empty()
             || self.private_ip
+            || self.clash_mode.is_some()
     }
 }
 
@@ -617,6 +663,7 @@ mod tests {
             hijack_dns: false,
             invert: false,
             outbound: "direct".into(),
+            ..Default::default()
         };
         assert!(!empty.has_conditions());
 

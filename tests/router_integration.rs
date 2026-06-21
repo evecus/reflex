@@ -2,6 +2,7 @@
 
 use bytes::Bytes;
 use reflex::{
+    clash_mode::ClashMode,
     config::route::{NetworkFilter, PortFilter, RouteConfig, RouteRuleConfig, RuleSetRef},
     inbound::{InboundTcpStream, InboundUdpPacket, Target, UdpSession},
     router::{RouteAction, Router},
@@ -100,7 +101,7 @@ async fn router_loads_ruleset_file() {
         default_mark: None,
     };
 
-    let router = Router::from_config(&config, None, None).unwrap();
+    let router = Router::from_config(&config, None, None, std::sync::Arc::new(ClashMode::new("rule"))).unwrap();
 
     let google = make_conn(Target::Domain("www.google.com".into(), 443), "in").await;
     let baidu = make_conn(Target::Domain("www.baidu.com".into(), 443), "in").await;
@@ -164,7 +165,7 @@ async fn router_multiple_rulesets_or_logic() {
         default_interface: None,
         default_mark: None,
     };
-    let router = Router::from_config(&config, None, None).unwrap();
+    let router = Router::from_config(&config, None, None, std::sync::Arc::new(ClashMode::new("rule"))).unwrap();
 
     let baidu = make_conn(Target::Domain("www.baidu.com".into(), 80), "in").await;
     let cn_ip = make_conn(Target::Socket("114.5.5.5:80".parse().unwrap()), "in").await;
@@ -202,7 +203,7 @@ async fn router_dns_out_routing() {
         default_interface: None,
         default_mark: None,
     };
-    let router = Router::from_config(&config, None, None).unwrap();
+    let router = Router::from_config(&config, None, None, std::sync::Arc::new(ClashMode::new("rule"))).unwrap();
 
     let dns_q = make_conn(Target::Domain("example.com".into(), 53), "dns-in").await;
     let cn = make_conn(Target::Domain("example.cn".into(), 80), "tproxy-in").await;
@@ -235,7 +236,7 @@ async fn router_network_filter_separates_tcp_udp() {
         default_interface: None,
         default_mark: None,
     };
-    let router = Router::from_config(&config, None, None).unwrap();
+    let router = Router::from_config(&config, None, None, std::sync::Arc::new(ClashMode::new("rule"))).unwrap();
 
     // UDP port 53 → dns-out
     let udp_pkt = make_udp_packet(Target::Socket("8.8.8.8:53".parse().unwrap()), "tproxy-in");
@@ -269,7 +270,7 @@ async fn router_private_ip_direct() {
         default_interface: None,
         default_mark: None,
     };
-    let router = Router::from_config(&config, None, None).unwrap();
+    let router = Router::from_config(&config, None, None, std::sync::Arc::new(ClashMode::new("rule"))).unwrap();
 
     for ip in ["127.0.0.1", "10.0.0.1", "172.16.1.1", "192.168.1.100"] {
         let conn = make_conn(Target::Socket(format!("{ip}:80").parse().unwrap()), "in").await;
@@ -302,7 +303,7 @@ async fn router_port_range_rule() {
         default_interface: None,
         default_mark: None,
     };
-    let router = Router::from_config(&config, None, None).unwrap();
+    let router = Router::from_config(&config, None, None, std::sync::Arc::new(ClashMode::new("rule"))).unwrap();
 
     let p80 = make_conn(Target::Socket("1.2.3.4:80".parse().unwrap()), "in").await;
     let p443 = make_conn(Target::Socket("1.2.3.4:443".parse().unwrap()), "in").await;

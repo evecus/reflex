@@ -21,6 +21,7 @@ use tracing::{debug, warn};
 use crate::ruleset::{MatchTarget, RuleSet};
 
 use crate::{
+    clash_mode::ClashMode,
     config::dns::{DnsConfig, DnsQueryType, DnsRuleConfig, ResolveStrategy},
     experimental::{CacheFile, CacheFileReader},
     inbound::dns::DnsQuery,
@@ -56,18 +57,36 @@ pub struct DnsResolver {
     /// `dns.proxy_domain_resolver` 指定的 server tag，用于解析代理出站节点的服务器域名。
     /// 构造时已校验该 tag 存在于 upstreams 中。
     proxy_domain_resolver: Option<String>,
+    /// Clash API 当前模式的共享只读引用，供 DNS 规则的 `clash_mode` 条件匹配使用。
+    clash_mode: Arc<ClashMode>,
 }
 
 impl DnsResolver {
     pub fn from_config(config: &DnsConfig) -> anyhow::Result<Self> {
-        Self::from_config_full(config, &HashMap::new(), None, None, None, 0)
+        Self::from_config_full(
+            config,
+            &HashMap::new(),
+            None,
+            None,
+            None,
+            0,
+            Arc::new(ClashMode::new("rule")),
+        )
     }
 
     pub fn from_config_with_rulesets(
         config: &DnsConfig,
         rulesets: &HashMap<String, Arc<RuleSet>>,
     ) -> anyhow::Result<Self> {
-        Self::from_config_full(config, rulesets, None, None, None, 0)
+        Self::from_config_full(
+            config,
+            rulesets,
+            None,
+            None,
+            None,
+            0,
+            Arc::new(ClashMode::new("rule")),
+        )
     }
 
     pub fn from_config_with_rulesets_and_outbounds(
@@ -75,10 +94,23 @@ impl DnsResolver {
         rulesets: &HashMap<String, Arc<RuleSet>>,
         outbounds: Option<&HashMap<String, Arc<dyn Outbound>>>,
     ) -> anyhow::Result<Self> {
-        Self::from_config_full(config, rulesets, outbounds, None, None, 0)
+        Self::from_config_full(
+            config,
+            rulesets,
+            outbounds,
+            None,
+            None,
+            0,
+            Arc::new(ClashMode::new("rule")),
+        )
     }
 
     /// 最完整构造：支持 CacheFile 注入（fakeip 持久化 + DNS 缓存持久化）。
+    ///
+    /// `clash_mode`：Clash API 当前模式的共享状态，用于 DNS 规则的 `clash_mode`
+    /// 条件。生产环境（`app/mod.rs`）应传入与 `Router`/`ClashApi` 共享的同一个
+    /// `Arc<ClashMode>` 实例；其余 wrapper 构造函数（测试/简化场景）各自创建
+    /// 一个独立实例，互不影响。
     pub fn from_config_full(
         config: &DnsConfig,
         rulesets: &HashMap<String, Arc<RuleSet>>,
@@ -86,6 +118,7 @@ impl DnsResolver {
         cache_writer: Option<Arc<CacheFile>>,
         cache_reader: Option<Arc<CacheFileReader>>,
         routing_mark: u32,
+        clash_mode: Arc<ClashMode>,
     ) -> anyhow::Result<Self> {
         // 验证 optimistic 和 disable_cache 不能同时开
         if config.optimistic_timeout > 0 && config.disable_cache {
@@ -213,6 +246,7 @@ impl DnsResolver {
             upstreams,
             strategy: config.strategy,
             proxy_domain_resolver: config.proxy_domain_resolver.clone(),
+            clash_mode,
         })
     }
 
@@ -256,7 +290,7 @@ impl DnsResolver {
             .rules
             .iter()
             .find(|r| {
-                r.matches("", host, 1 /* A */)
+                r.matches("", host, 1 /* A */, &self.clash_mode.get())
                     && !matches!(r.upstream.kind, upstream::UpstreamKind::FakeIp { .. })
             })
             .map(|r| r.upstream.clone())
@@ -276,7 +310,106 @@ impl DnsResolver {
             .await
     }
 
-    /// 解析「代理出站节点服务器域名」专用入口。
+    /// 解析域名的**全部**候选地址（A + AAAA），按 `strategy` 排序，供 Happy
+    /// Eyeballs 多候选拨号使用（对齐 sing-box `network_strategy` 的候选地址
+    /// 来源）。upstream 选择逻辑和 `resolve_domain` 完全一致，区别只是不止取
+    /// 第一个 IP。
+    pub async fn resolve_domain_all(&self, host: &str) -> anyhow::Result<Vec<std::net::IpAddr>> {
+        let upstream = self
+            .rules
+            .iter()
+            .find(|r| {
+                r.matches("", host, 1 /* A */, &self.clash_mode.get())
+                    && !matches!(r.upstream.kind, upstream::UpstreamKind::FakeIp { .. })
+            })
+            .map(|r| r.upstream.clone())
+            .unwrap_or_else(|| {
+                if matches!(self.default.kind, upstream::UpstreamKind::FakeIp { .. }) {
+                    self.upstreams
+                        .values()
+                        .find(|u| !matches!(u.kind, upstream::UpstreamKind::FakeIp { .. }))
+                        .cloned()
+                        .unwrap_or_else(|| self.default.clone())
+                } else {
+                    self.default.clone()
+                }
+            });
+        self.resolve_domain_all_with_strategy(host, self.strategy, &upstream)
+            .await
+    }
+
+    /// 内部：用指定上游和指定策略解析域名的全部候选地址，按策略排序。
+    /// 与 `resolve_domain_with_strategy` 结构保持一致，便于对照维护。
+    async fn resolve_domain_all_with_strategy(
+        &self,
+        host: &str,
+        strategy: ResolveStrategy,
+        upstream: &Arc<DnsUpstream>,
+    ) -> anyhow::Result<Vec<std::net::IpAddr>> {
+        use std::net::IpAddr;
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return Ok(vec![ip]);
+        }
+
+        match strategy {
+            ResolveStrategy::Ipv4Only => {
+                let query_a = build_query(host, 1u16);
+                let resp = upstream.query(query_a.into()).await;
+                let v4 = resp
+                    .ok()
+                    .as_deref()
+                    .map(|r| extract_all_ips(r, 1))
+                    .unwrap_or_default();
+                if v4.is_empty() {
+                    anyhow::bail!("dns resolve failed for '{host}': no A answer");
+                }
+                Ok(v4)
+            }
+            ResolveStrategy::Ipv6Only => {
+                let query_aaaa = build_query(host, 28u16);
+                let resp = upstream.query(query_aaaa.into()).await;
+                let v6 = resp
+                    .ok()
+                    .as_deref()
+                    .map(|r| extract_all_ips(r, 28))
+                    .unwrap_or_default();
+                if v6.is_empty() {
+                    anyhow::bail!("dns resolve failed for '{host}': no AAAA answer");
+                }
+                Ok(v6)
+            }
+            ResolveStrategy::PreferIpv4 | ResolveStrategy::PreferIpv6 => {
+                let query_a = build_query(host, 1u16);
+                let query_aaaa = build_query(host, 28u16);
+                let (resp_a, resp_aaaa) = tokio::join!(
+                    upstream.query(query_a.into()),
+                    upstream.query(query_aaaa.into()),
+                );
+                let v4 = resp_a
+                    .ok()
+                    .as_deref()
+                    .map(|r| extract_all_ips(r, 1))
+                    .unwrap_or_default();
+                let v6 = resp_aaaa
+                    .ok()
+                    .as_deref()
+                    .map(|r| extract_all_ips(r, 28))
+                    .unwrap_or_default();
+                let mut out = Vec::with_capacity(v4.len() + v6.len());
+                if matches!(strategy, ResolveStrategy::PreferIpv6) {
+                    out.extend(v6);
+                    out.extend(v4);
+                } else {
+                    out.extend(v4);
+                    out.extend(v6);
+                }
+                if out.is_empty() {
+                    anyhow::bail!("dns resolve failed for '{host}': no answer");
+                }
+                Ok(out)
+            }
+        }
+    }
     /// 若配置了 `dns.proxy_domain_resolver`，走该 server tag（沿用全局 `strategy`）；
     /// 否则回退到 `resolve_domain`（按规则 + dns.final 默认上游解析，行为与之前一致）。
     pub async fn resolve_proxy_domain(&self, host: &str) -> anyhow::Result<std::net::IpAddr> {
@@ -429,10 +562,11 @@ impl DnsResolver {
         debug!(qname=%qname, qtype=qtype, inbound=%inbound_tag, "dns query");
 
         // ── 规则匹配，选择上游 ────────────────────────────────────────────────
+        let current_mode = self.clash_mode.get();
         let (upstream, disable_cache) = self
             .rules
             .iter()
-            .find(|r| r.matches(inbound_tag, &qname, qtype))
+            .find(|r| r.matches(inbound_tag, &qname, qtype, &current_mode))
             .map(|r| (r.upstream.clone(), r.disable_cache))
             .unwrap_or_else(|| (self.default.clone(), false));
 
@@ -521,6 +655,10 @@ struct CompiledDnsRule {
     file_rulesets: Vec<Arc<RuleSet>>,
     upstream: Arc<DnsUpstream>,
     disable_cache: bool,
+    /// 仅当 Clash API 当前模式等于该值时才命中（对应 `clash_mode`），
+    /// 大小写不敏感比较；None 表示不限制模式。与主路由规则的 `clash_mode`
+    /// 语义一致，见 `router::CompiledRule`。
+    clash_mode_filter: Option<String>,
 }
 
 impl CompiledDnsRule {
@@ -581,10 +719,17 @@ impl CompiledDnsRule {
             file_rulesets,
             upstream,
             disable_cache: rule.disable_cache,
+            clash_mode_filter: rule.clash_mode.clone(),
         })
     }
 
-    fn matches(&self, inbound_tag: &str, qname: &str, qtype: u16) -> bool {
+    fn matches(&self, inbound_tag: &str, qname: &str, qtype: u16, current_mode: &str) -> bool {
+        // Clash API 模式过滤（不受其他条件影响的硬性前置过滤）。
+        if let Some(mode) = &self.clash_mode_filter {
+            if !mode.eq_ignore_ascii_case(current_mode) {
+                return false;
+            }
+        }
         if !self.inbound_tags.is_empty() && !self.inbound_tags.iter().any(|t| t == inbound_tag) {
             return false;
         }
@@ -1009,6 +1154,88 @@ fn extract_first_ip(resp: &[u8], qtype: u16) -> Option<std::net::IpAddr> {
     None
 }
 
+/// 与 `extract_first_ip` 平行的实现：不是命中第一条就返回，而是收集**全部**
+/// 匹配 `qtype` 的记录。供 `resolve_domain_all`（Happy Eyeballs 多候选拨号）
+/// 使用。刻意不复用 `extract_first_ip` 内部逻辑（哪怕有重复），是为了不去碰
+/// 已经过充分测试的原函数，降低改动风险。
+fn extract_all_ips(resp: &[u8], qtype: u16) -> Vec<std::net::IpAddr> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let mut out = Vec::new();
+    if resp.len() < 12 {
+        return out;
+    }
+    let ancount = u16::from_be_bytes([resp[6], resp[7]]) as usize;
+    if ancount == 0 {
+        return out;
+    }
+    let mut pos = 12;
+    loop {
+        if pos >= resp.len() {
+            return out;
+        }
+        let len = resp[pos] as usize;
+        if len == 0 {
+            pos += 1;
+            break;
+        }
+        if len & 0xC0 == 0xC0 {
+            pos += 2;
+            break;
+        }
+        pos += 1 + len;
+    }
+    pos += 4;
+    for _ in 0..ancount {
+        if pos >= resp.len() {
+            break;
+        }
+        if resp[pos] & 0xC0 == 0xC0 {
+            pos += 2;
+        } else {
+            loop {
+                if pos >= resp.len() {
+                    return out;
+                }
+                let l = resp[pos] as usize;
+                if l == 0 {
+                    pos += 1;
+                    break;
+                }
+                pos += 1 + l;
+            }
+        }
+        if pos + 10 > resp.len() {
+            break;
+        }
+        let rr_type = u16::from_be_bytes([resp[pos], resp[pos + 1]]);
+        let rdlength = u16::from_be_bytes([resp[pos + 8], resp[pos + 9]]) as usize;
+        pos += 10;
+        if pos + rdlength > resp.len() {
+            break;
+        }
+        if rr_type == qtype {
+            match qtype {
+                1 if rdlength == 4 => {
+                    out.push(IpAddr::V4(Ipv4Addr::new(
+                        resp[pos],
+                        resp[pos + 1],
+                        resp[pos + 2],
+                        resp[pos + 3],
+                    )));
+                }
+                28 if rdlength == 16 => {
+                    let mut o = [0u8; 16];
+                    o.copy_from_slice(&resp[pos..pos + 16]);
+                    out.push(IpAddr::V6(Ipv6Addr::from(o)));
+                }
+                _ => {}
+            }
+        }
+        pos += rdlength;
+    }
+    out
+}
+
 // ── 拓扑排序 ──────────────────────────────────────────────────────────────────
 
 fn toposort_servers(servers: &[crate::config::dns::DnsServerConfig]) -> anyhow::Result<Vec<usize>> {
@@ -1080,6 +1307,84 @@ mod tests {
         msg.extend_from_slice(&qtype.to_be_bytes());
         msg.extend_from_slice(&[0x00, 0x01]);
         msg
+    }
+
+    /// 构造一个最小可用的 DNS 响应报文：1 条问题 + 任意条答案记录
+    /// （NAME 用指针压缩指向 offset 12 处的问题段，和真实 DNS 报文一致）。
+    fn make_response_with_records(
+        qname: &str,
+        qtype_for_question: u16,
+        records: &[(u16, Vec<u8>)],
+    ) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&[0x00, 0x01]); // ID
+        msg.extend_from_slice(&[0x81, 0x80]); // flags: response, RD+RA
+        msg.extend_from_slice(&[0x00, 0x01]); // QDCOUNT=1
+        msg.extend_from_slice(&(records.len() as u16).to_be_bytes()); // ANCOUNT
+        msg.extend_from_slice(&[0x00, 0x00]); // NSCOUNT
+        msg.extend_from_slice(&[0x00, 0x00]); // ARCOUNT
+
+        for label in qname.split('.') {
+            msg.push(label.len() as u8);
+            msg.extend_from_slice(label.as_bytes());
+        }
+        msg.push(0x00);
+        msg.extend_from_slice(&qtype_for_question.to_be_bytes());
+        msg.extend_from_slice(&[0x00, 0x01]); // QCLASS=IN
+
+        for (rtype, rdata) in records {
+            msg.extend_from_slice(&[0xC0, 0x0C]); // NAME：指针压缩，指向 offset 12
+            msg.extend_from_slice(&rtype.to_be_bytes());
+            msg.extend_from_slice(&[0x00, 0x01]); // CLASS=IN
+            msg.extend_from_slice(&[0x00, 0x00, 0x0E, 0x10]); // TTL=3600
+            msg.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+            msg.extend_from_slice(rdata);
+        }
+        msg
+    }
+
+    #[test]
+    fn extract_all_ips_collects_multiple_a_records() {
+        let resp = make_response_with_records(
+            "example.com",
+            1,
+            &[(1, vec![1, 2, 3, 4]), (1, vec![5, 6, 7, 8])],
+        );
+        let ips = extract_all_ips(&resp, 1);
+        assert_eq!(
+            ips,
+            vec![
+                "1.2.3.4".parse::<std::net::IpAddr>().unwrap(),
+                "5.6.7.8".parse::<std::net::IpAddr>().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_all_ips_empty_when_qtype_not_present() {
+        let resp = make_response_with_records("example.com", 1, &[(1, vec![1, 2, 3, 4])]);
+        // 响应里只有 A 记录，找 AAAA 应该返回空，而不是 panic 或返回错误类型的值
+        assert!(extract_all_ips(&resp, 28).is_empty());
+    }
+
+    #[test]
+    fn extract_all_ips_filters_by_qtype_in_mixed_response() {
+        let v6_bytes = std::net::Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1)
+            .octets()
+            .to_vec();
+        let resp = make_response_with_records(
+            "example.com",
+            1,
+            &[(1, vec![9, 9, 9, 9]), (28, v6_bytes)],
+        );
+        assert_eq!(
+            extract_all_ips(&resp, 1),
+            vec!["9.9.9.9".parse::<std::net::IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            extract_all_ips(&resp, 28),
+            vec!["2001:db8::1".parse::<std::net::IpAddr>().unwrap()]
+        );
     }
 
     #[test]

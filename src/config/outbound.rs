@@ -905,18 +905,43 @@ pub struct TrojanTcpConfig {}
 
 // ── Direct / Block ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DirectOutboundConfig {
     pub tag: String,
 
     /// 绑定本地出口 IP（可选）
     #[serde(default)]
     pub bind_address: Option<String>,
+
+    /// 拨号策略，对齐 sing-box `network_strategy`。
+    /// - 不填或 `"default"`：仅用 DNS 解析结果的首选地址连接（原有行为，单地址，无回退）。
+    /// - `"happy_eyeballs"`：域名同时有 A/AAAA 记录时，并发/错峰尝试多个候选地址
+    ///   （IPv4 + IPv6），谁先连上用谁，谁先失败就尽快换下一个候选——参照
+    ///   RFC 8305，能显著降低双栈网络下因某个协议栈故障/丢包导致的连接延迟。
+    ///   仅对域名目标生效；目标本身就是 IP 时该选项无意义。
+    #[serde(default)]
+    pub network_strategy: Option<String>,
+
+    /// `network_strategy = "happy_eyeballs"` 时，启动下一个候选地址前的等待
+    /// 毫秒数，对齐 sing-box `fallback_delay`。默认 250（RFC 8305 推荐值）。
+    #[serde(default)]
+    pub fallback_delay_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BlockOutboundConfig {
     pub tag: String,
+
+    /// reject 方式，对齐 sing-box reject 动作的 `method` 字段：
+    /// - 不填或 `"default"`：立即关闭连接（原有行为）。
+    /// - `"drop"`：静默丢弃——不发送任何关闭信号，只是不再读写数据，让连接
+    ///   挂起直到客户端自己超时。可用于让主动扫探/审查系统更难区分"被墙"
+    ///   和"目标不存在"。
+    ///
+    /// 注：sing-box 还有一个 `"reply"`（伪造协议相关的应答后再关闭）方式未实现，
+    /// 因为需要按具体协议构造看起来合理的回包，复杂度和收益不成正比，暂不支持。
+    #[serde(default)]
+    pub method: Option<String>,
 }
 
 // ── SOCKS ─────────────────────────────────────────────────────────────────────

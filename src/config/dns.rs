@@ -211,6 +211,12 @@ pub struct DnsRuleConfig {
     /// 命中后是否禁用缓存
     #[serde(default)]
     pub disable_cache: bool,
+
+    /// 仅当 Clash API 当前模式等于该值时才命中本规则，大小写不敏感。
+    /// 与主路由规则的 `clash_mode` 字段语义一致（见 `RouteRuleConfig::clash_mode`），
+    /// 对齐 sing-box DNS 规则同样支持的 `clash_mode` 条件。
+    #[serde(default)]
+    pub clash_mode: Option<String>,
 }
 
 /// DNS 查询类型

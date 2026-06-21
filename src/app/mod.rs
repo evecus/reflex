@@ -13,6 +13,7 @@ use tokio::{sync::mpsc, task::JoinSet};
 use tracing::{error, info};
 
 use crate::{
+    clash_mode::ClashMode,
     config::{dns::ResolveStrategy, inbound::InboundConfig, Config},
     dns::DnsResolver,
     experimental::{open_cache_file, CacheFile, CacheFileReader},
@@ -77,11 +78,24 @@ impl App {
                 (None, None)
             };
 
+        // ── 0.5 Clash API 模式共享状态 ──────────────────────────────────────
+        // 必须在 Router / DnsResolver 之前创建：三者要共享同一个 Arc<ClashMode>
+        // 实例，这样 PATCH /configs 写入的模式变化才能被 `clash_mode` 规则条件
+        // 实时感知（对齐 sing-box clash_mode 规则项的语义）。
+        let initial_mode = config
+            .experimental
+            .clash_api
+            .as_ref()
+            .map(|c| c.default_mode.clone())
+            .unwrap_or_else(|| "rule".to_string());
+        let clash_mode = Arc::new(ClashMode::new(initial_mode));
+
         // ── 1. 路由器（先建，因为 DNS resolver 需要共享规则集）────────────────
         let router = Arc::new(Router::from_config(
             &config.route,
             cache_reader.as_ref().map(|r| r.as_ref()),
             cache_writer.as_ref().map(|w| w.as_ref()),
+            clash_mode.clone(),
         )?);
         info!("router: {} rules loaded", config.route.rules.len());
 
@@ -101,6 +115,7 @@ impl App {
                 cache_writer.clone(),
                 cache_reader.clone(),
                 config.route.default_mark.unwrap_or(0),
+                clash_mode.clone(),
             )?;
             if !config.route.ipv6 {
                 // route.ipv6=false 强制 Ipv4Only，覆盖 dns.strategy 的任何设置
@@ -285,6 +300,7 @@ impl App {
                 cache_writer,
                 cache_reader,
                 config.route.default_mark.unwrap_or(0),
+                clash_mode.clone(),
             )?;
             if !config.route.ipv6 {
                 // route.ipv6=false 强制 Ipv4Only，覆盖 dns.strategy 的任何设置
@@ -449,6 +465,7 @@ impl App {
                     conn_tracker.clone(),
                     rs_registry,
                     Some(dns_resolver.clone()),
+                    clash_mode.clone(),
                 );
                 tasks.spawn(async move { clash_api.run().await });
             }

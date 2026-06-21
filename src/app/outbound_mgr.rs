@@ -226,6 +226,7 @@ impl OutboundManager {
             let cfg = crate::config::outbound::DirectOutboundConfig {
                 tag: "direct".to_string(),
                 bind_address: None,
+                ..Default::default()
             };
             if let Some(ref r) = resolver {
                 Arc::new(
@@ -307,6 +308,7 @@ fn fallback_block(tag: &str, protocol: &str) -> Arc<dyn Outbound> {
     Arc::new(BlockOutbound::new(
         crate::config::outbound::BlockOutboundConfig {
             tag: tag.to_string(),
+            ..Default::default()
         },
     ))
 }

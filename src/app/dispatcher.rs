@@ -21,7 +21,7 @@ use crate::{
         dns::{DnsQuery, DnsQueryTx},
         InboundTcpStream, InboundUdpPacket, Target,
     },
-    router::{RouteAction, Router},
+    router::{RouteAction, RouteOptions, Router},
 };
 
 use super::{
@@ -45,6 +45,32 @@ fn udp_timeout_for_port(port: u16) -> Duration {
         443 => Duration::from_secs(30),  // QUIC
         _ => UDP_TIMEOUT,
     }
+}
+
+/// 应用规则命中后的 `override_address` / `override_port`（对齐 sing-box
+/// 同名规则动作选项）。在所有 sniff/resolve 重新路由都完成、即将真正建立
+/// 连接之前调用一次；不影响已经记录下来的 rule_payload（Clash API 展示的
+/// 仍是原始匹配条件，只有实际转发目标被改写）。
+fn apply_route_overrides(target: &mut Target, opts: &RouteOptions) {
+    if opts.override_address.is_none() && opts.override_port.is_none() {
+        return;
+    }
+    let new_host = opts
+        .override_address
+        .clone()
+        .unwrap_or_else(|| target.host());
+    let new_port = opts.override_port.unwrap_or_else(|| target.port());
+    debug!(
+        original = %*target,
+        new_host = %new_host,
+        new_port = new_port,
+        "route: override_address/override_port applied"
+    );
+    *target = if let Ok(ip) = new_host.parse::<std::net::IpAddr>() {
+        Target::Socket(std::net::SocketAddr::new(ip, new_port))
+    } else {
+        Target::Domain(new_host, new_port)
+    };
 }
 
 // ── UDP 会话表 ────────────────────────────────────────────────────────────────
@@ -161,8 +187,9 @@ impl Dispatcher {
             }
 
             // 先做第一次路由，检查是否需要嗅探
-            let (action_ref, rule_type, rule_payload) = self.router.route_tcp(&conn);
+            let (action_ref, rule_type, rule_payload, options_ref) = self.router.route_tcp(&conn);
             let action = action_ref.clone();
+            let mut route_options = options_ref.clone();
             // 优化：.into() 将 &str 转为 Arc<str>，避免 .to_string() 的堆复制
             let mut rule_info = RuleInfo {
                 rule_type: rule_type.into(),
@@ -227,11 +254,12 @@ impl Dispatcher {
                         .as_ref()
                         .map(|d| crate::inbound::Target::Domain(d.clone(), conn.target.port()));
                     let route_target = sniff_target.as_ref().unwrap_or(&conn.target);
-                    let (a, rt, rp) = self.router.route_tcp_after_sniff(&conn, route_target);
+                    let (a, rt, rp, ro) = self.router.route_tcp_after_sniff(&conn, route_target);
                     rule_info = RuleInfo {
                         rule_type: rt.into(),
                         rule_payload: rp.into(),
                     };
+                    route_options = ro.clone();
                     a.clone()
                 }
             } else {
@@ -257,12 +285,13 @@ impl Dispatcher {
                                 "resolve: domain resolved, re-routing with IP target"
                             );
                             {
-                                let (a, rt, rp) =
+                                let (a, rt, rp, ro) =
                                     self.router.route_tcp_after_resolve(&conn, &resolved_target);
                                 rule_info = RuleInfo {
                                     rule_type: rt.into(),
                                     rule_payload: rp.into(),
                                 };
+                                route_options = ro.clone();
                                 a.clone()
                             }
                         }
@@ -270,28 +299,34 @@ impl Dispatcher {
                             debug!(domain = %host, err = %e, "resolve: DNS lookup failed, falling through");
                             // 解析失败时跳过 resolve 规则继续后续匹配
                             {
-                                let (a, rt, rp) =
+                                let (a, rt, rp, ro) =
                                     self.router.route_tcp_after_resolve(&conn, &conn.target);
                                 rule_info = RuleInfo {
                                     rule_type: rt.into(),
                                     rule_payload: rp.into(),
                                 };
+                                route_options = ro.clone();
                                 a.clone()
                             }
                         }
                     }
                 } else {
                     // 目标已经是 IP，无需解析，直接跳过 resolve 继续
-                    let (a, rt, rp) = self.router.route_tcp_after_resolve(&conn, &conn.target);
+                    let (a, rt, rp, ro) = self.router.route_tcp_after_resolve(&conn, &conn.target);
                     rule_info = RuleInfo {
                         rule_type: rt.into(),
                         rule_payload: rp.into(),
                     };
+                    route_options = ro.clone();
                     a.clone()
                 }
             } else {
                 action
             };
+
+            // 应用 override_address / override_port（在所有 sniff/resolve 重路由
+            // 完成后、实际派发给出站之前生效）。
+            apply_route_overrides(&mut conn.target, &route_options);
 
             let mgr = self.outbound_mgr.clone();
             let dns_tx = self.dns_tx.clone();
@@ -351,20 +386,22 @@ impl Dispatcher {
                         packet.sniffed_protocol = Some("dns".to_string());
                     }
 
-                    let (action_ref, rule_type, rule_payload) = self.router.route_udp(&packet);
+                    let (action_ref, rule_type, rule_payload, options_ref) = self.router.route_udp(&packet);
                     let action = action_ref.clone();
                     let mut rule_info = RuleInfo {
                         rule_type: rule_type.into(),
                         rule_payload: rule_payload.into(),
                     };
+                    let mut route_options = options_ref.clone();
 
                     // UDP 不支持嗅探，跳过 Sniff 规则后继续向后匹配（与 TCP 对称）。
                     let action = if matches!(action, RouteAction::Sniff { .. }) {
-                        let (a, rt, rp) = self.router.route_udp_after_sniff(&packet);
+                        let (a, rt, rp, ro) = self.router.route_udp_after_sniff(&packet);
                         rule_info = RuleInfo {
                             rule_type: rt.into(),
                             rule_payload: rp.into(),
                         };
+                        route_options = ro.clone();
                         a.clone()
                     } else {
                         action
@@ -382,20 +419,23 @@ impl Dispatcher {
                             match resolve_result {
                                 Ok(ip) => {
                                     let resolved = Target::Socket(std::net::SocketAddr::new(ip, port));
-                                    let (a, rt, rp) = self.router.route_udp_after_resolve(&packet, &resolved);
+                                    let (a, rt, rp, ro) = self.router.route_udp_after_resolve(&packet, &resolved);
                                     rule_info = RuleInfo { rule_type: rt.into(), rule_payload: rp.into() };
+                                    route_options = ro.clone();
                                     a.clone()
                                 }
                                 Err(e) => {
                                     debug!(domain = %host, err = %e, "resolve(udp): DNS lookup failed, falling through");
-                                    let (a, rt, rp) = self.router.route_udp_after_resolve(&packet, &packet.target);
+                                    let (a, rt, rp, ro) = self.router.route_udp_after_resolve(&packet, &packet.target);
                                     rule_info = RuleInfo { rule_type: rt.into(), rule_payload: rp.into() };
+                                    route_options = ro.clone();
                                     a.clone()
                                 }
                             }
                         } else {
-                            let (a, rt, rp) = self.router.route_udp_after_resolve(&packet, &packet.target);
+                            let (a, rt, rp, ro) = self.router.route_udp_after_resolve(&packet, &packet.target);
                             rule_info = RuleInfo { rule_type: rt.into(), rule_payload: rp.into() };
+                            route_options = ro.clone();
                             a.clone()
                         }
                     } else {
@@ -436,9 +476,21 @@ impl Dispatcher {
                     };
 
                     // 优化：Box<str> 比 String 少 1 word（无 capacity 字段），key 更紧凑
+                    // 会话去重 key 用客户端视角的原始目标（packet.target），即使后面
+                    // 应用了 override_address/override_port，相同来源/原始目标的包
+                    // 也应该复用同一个会话。
                     let target_str: Box<str> = packet.target.to_string().into_boxed_str();
                     let session_key: UdpSessionKey = (packet.src, target_str, outbound_tag.clone());
-                    let timeout = udp_timeout_for_port(packet.target.port());
+
+                    // 实际拨号目标：应用 override_address/override_port。
+                    let mut dial_target = packet.target.clone();
+                    apply_route_overrides(&mut dial_target, &route_options);
+
+                    // udp_timeout 规则级覆盖，对齐 sing-box `udp_timeout`。
+                    let timeout = route_options
+                        .udp_timeout
+                        .map(Duration::from_secs)
+                        .unwrap_or_else(|| udp_timeout_for_port(dial_target.port()));
 
                     if let Some(handle) = session_table.get_live(&session_key) {
                         // 会话存活，直接投递数据
@@ -460,7 +512,7 @@ impl Dispatcher {
                         let dns_tx = self.dns_tx.clone();
                         let reply_tx = packet.session.reply_tx.clone();
                         let src = packet.src;
-                        let target = packet.target.clone();
+                        let target = dial_target.clone();
                         let inbound_tag = packet.inbound_tag.clone();
                         let rule_info_clone = rule_info.clone();
                         // Arc<str> clone 只是原子 +1

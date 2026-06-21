@@ -11,10 +11,14 @@
 //! - connect_tcp 设置 TCP_NODELAY，降低小包延迟。
 //! - [多网卡] 新增 auto_detect_interface / default_interface 支持：
 //!   多网卡旁路由环境下，direct 出站会通过 SO_BINDTODEVICE 自动绑定到正确出口网卡。
+//! - [拨号策略] 新增 network_strategy = "happy_eyeballs"：域名目标同时有 A/AAAA
+//!   记录时，按 RFC 8305 风格错峰并发尝试多个候选地址，谁先连上用谁，缓解双栈
+//!   网络下单一协议栈故障/丢包造成的连接延迟（对齐 sing-box network_strategy）。
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use tokio::net::TcpStream;
 use tracing::debug;
 
@@ -164,6 +168,127 @@ impl DirectOutbound {
         Ok(stream)
     }
 
+    /// 解析目标并建立 TCP 连接的统一入口。
+    ///
+    /// 域名目标在配置了 `network_strategy = "happy_eyeballs"` 且内部 DNS
+    /// resolver 可用时，会并发/错峰尝试多个候选地址（IPv4 + IPv6，对齐
+    /// sing-box `network_strategy` / `fallback_delay`）；其余情况（IP 目标、
+    /// 未启用该策略、resolver 不可用、或解析候选为空）保持原有的单地址
+    /// 解析 + 连接行为不变。
+    async fn dial_tcp(&self, target: &crate::inbound::Target) -> anyhow::Result<TcpStream> {
+        use crate::inbound::Target;
+
+        let use_happy_eyeballs = self
+            .config
+            .network_strategy
+            .as_deref()
+            .is_some_and(|s| s.eq_ignore_ascii_case("happy_eyeballs"));
+
+        if use_happy_eyeballs {
+            if let (Target::Domain(host, port), Some(resolver)) = (target, self.resolver.as_ref())
+            {
+                match resolver.resolve_domain_all(host).await {
+                    Ok(ips) if !ips.is_empty() => {
+                        let candidates: Vec<SocketAddr> = ips
+                            .into_iter()
+                            .map(|ip| SocketAddr::new(ip, *port))
+                            .collect();
+                        let fallback_delay = tokio::time::Duration::from_millis(
+                            self.config.fallback_delay_ms.unwrap_or(250),
+                        );
+                        debug!(
+                            tag=%self.config.tag,
+                            host=%host,
+                            candidates=candidates.len(),
+                            fallback_delay_ms=fallback_delay.as_millis() as u64,
+                            "happy_eyeballs: dialing multiple candidates"
+                        );
+                        return self
+                            .connect_tcp_happy_eyeballs(&candidates, fallback_delay)
+                            .await;
+                    }
+                    Ok(_) => {
+                        // 候选为空，落到下面的常规单地址路径（会得到一致的报错信息）
+                    }
+                    Err(e) => {
+                        debug!(
+                            tag=%self.config.tag, host=%host, err=%e,
+                            "happy_eyeballs: resolve_domain_all failed, falling back to single-address path"
+                        );
+                    }
+                }
+            }
+        }
+
+        let addr = resolve_target_with_dns(target, self.resolver.as_ref()).await?;
+        self.tcp_connect_addr(addr).await
+    }
+
+    /// Happy Eyeballs（RFC 8305）风格的多候选地址拨号：按 `candidates` 顺序
+    /// （已由 `resolve_domain_all` 按 strategy 排好优先级）逐个启动连接尝试，
+    /// 每隔 `fallback_delay` 启动下一个候选而不必等前一个失败或超时；任意一个
+    /// 候选率先连接成功就立即返回，其余仍在进行中的尝试随 `inflight` 一起被
+    /// 丢弃，其底层 socket 在 drop 时自动关闭。
+    async fn connect_tcp_happy_eyeballs(
+        &self,
+        candidates: &[SocketAddr],
+        fallback_delay: tokio::time::Duration,
+    ) -> anyhow::Result<TcpStream> {
+        if candidates.is_empty() {
+            anyhow::bail!("direct: no candidate addresses to connect");
+        }
+        if candidates.len() == 1 {
+            return self.tcp_connect_addr(candidates[0]).await;
+        }
+
+        let mut remaining = candidates.iter().copied().peekable();
+        let mut inflight = futures_util::stream::FuturesUnordered::new();
+        let mut last_err: Option<anyhow::Error> = None;
+
+        // 启动第一个候选（最优先地址，不必等待 fallback_delay）。
+        if let Some(addr) = remaining.next() {
+            inflight.push(self.tcp_connect_addr(addr));
+        }
+
+        loop {
+            if inflight.is_empty() && remaining.peek().is_none() {
+                break;
+            }
+            let has_more = remaining.peek().is_some();
+            tokio::select! {
+                biased;
+                res = inflight.next(), if !inflight.is_empty() => {
+                    match res {
+                        Some(Ok(stream)) => return Ok(stream),
+                        Some(Err(e)) => {
+                            debug!(
+                                tag=%self.config.tag, err=%e,
+                                "happy_eyeballs: candidate failed, trying next if available"
+                            );
+                            last_err = Some(e);
+                            if let Some(addr) = remaining.next() {
+                                inflight.push(self.tcp_connect_addr(addr));
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                _ = tokio::time::sleep(fallback_delay), if has_more => {
+                    if let Some(addr) = remaining.next() {
+                        debug!(
+                            tag=%self.config.tag, addr=%addr,
+                            "happy_eyeballs: fallback_delay elapsed, starting next candidate"
+                        );
+                        inflight.push(self.tcp_connect_addr(addr));
+                    }
+                }
+            }
+        }
+
+        Err(last_err
+            .unwrap_or_else(|| anyhow::anyhow!("direct: all candidate addresses failed to connect")))
+    }
+
     /// 为单次 UDP 发送创建一个独立 socket，支持网卡绑定。
     async fn new_udp_socket(&self, dst: SocketAddr) -> anyhow::Result<tokio::net::UdpSocket> {
         if let Some(bind_ip) = &self.config.bind_address {
@@ -211,15 +336,13 @@ impl Outbound for DirectOutbound {
         port: u16,
     ) -> anyhow::Result<Box<dyn crate::outbound::AsyncReadWrite>> {
         let target = crate::inbound::Target::Domain(host.to_string(), port);
-        let addr = resolve_target_with_dns(&target, self.resolver.as_ref()).await?;
-        let stream = self.tcp_connect_addr(addr).await?;
+        let stream = self.dial_tcp(&target).await?;
         Ok(Box::new(stream))
     }
 
     async fn handle_tcp(&self, conn: InboundTcpStream) -> anyhow::Result<(u64, u64)> {
-        let addr = resolve_target_with_dns(&conn.target, self.resolver.as_ref()).await?;
-        debug!(tag=%self.config.tag, target=%conn.target, addr=%addr, "direct tcp");
-        let remote = self.tcp_connect_addr(addr).await?;
+        debug!(tag=%self.config.tag, target=%conn.target, "direct tcp");
+        let remote = self.dial_tcp(&conn.target).await?;
         let (up, down) = relay(conn.stream, remote).await;
         debug!(tag=%self.config.tag, up=%up, down=%down, "direct tcp done");
         Ok((up, down))
@@ -304,11 +427,21 @@ impl Outbound for DirectOutbound {
 
 pub struct BlockOutbound {
     config: BlockOutboundConfig,
+    /// `method = "drop"` 时为 true：静默丢弃，不关闭连接也不回任何数据。
+    /// 对齐 sing-box reject 动作的 method 字段（`"reply"` 方式未实现，见配置注释）。
+    silent_drop: bool,
 }
 
 impl BlockOutbound {
     pub fn new(config: BlockOutboundConfig) -> Self {
-        Self { config }
+        let silent_drop = config
+            .method
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case("drop"));
+        Self {
+            config,
+            silent_drop,
+        }
     }
 }
 
@@ -328,14 +461,134 @@ impl Outbound for BlockOutbound {
         }
     }
 
-    async fn handle_tcp(&self, conn: InboundTcpStream) -> anyhow::Result<(u64, u64)> {
+    async fn handle_tcp(&self, mut conn: InboundTcpStream) -> anyhow::Result<(u64, u64)> {
+        if self.silent_drop {
+            // method = "drop"：不主动关闭、不回任何数据，只把客户端发来的字节
+            // 读掉丢弃，连接会一直挂着直到客户端自己放弃（或被 Clash API
+            // DELETE /connections 主动终止）。比直接关闭更难被探测区分
+            // "连接被拒绝" 和 "网络不通"。
+            debug!(tag=%self.config.tag, target=%conn.target, "block(drop) tcp: silently discarding");
+            let discarded = tokio::io::copy(&mut conn.stream, &mut tokio::io::sink())
+                .await
+                .unwrap_or(0);
+            return Ok((0, discarded));
+        }
         debug!(tag=%self.config.tag, target=%conn.target, "block tcp");
         drop(conn.stream);
         Ok((0, 0))
     }
 
     async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
-        debug!(tag=%self.config.tag, target=%packet.target, "block udp");
+        // UDP 无连接概念，"default" 和 "drop" 在 reflex 里行为一致：都不回任何
+        // 数据包。sing-box 的 "default" 方式会尝试发 ICMP port-unreachable，
+        // 但那需要原始套接字权限，复杂度和收益不成正比，这里不实现。
+        debug!(tag=%self.config.tag, target=%packet.target, method=?self.config.method, "block udp");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_direct() -> DirectOutbound {
+        DirectOutbound::new(DirectOutboundConfig {
+            tag: "direct".into(),
+            bind_address: None,
+            network_strategy: Some("happy_eyeballs".into()),
+            fallback_delay_ms: Some(50),
+        })
+    }
+
+    /// 返回一个当前没有任何进程监听的本地地址：先 bind 拿到一个空闲端口，
+    /// 再立刻 drop 监听器。在 loopback 上连接一个刚刚关闭的端口几乎总是
+    /// 立刻收到 ECONNREFUSED（不会等到 5 秒连接超时），适合用来模拟"候选
+    /// 地址连接失败"且不拖慢测试。
+    async fn unused_addr() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    }
+
+    #[tokio::test]
+    async fn happy_eyeballs_falls_back_to_working_candidate() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let bad_addr = unused_addr().await;
+        let ob = make_direct();
+
+        let result = ob
+            .connect_tcp_happy_eyeballs(
+                &[bad_addr, good_addr],
+                tokio::time::Duration::from_millis(50),
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "expected happy eyeballs to succeed via the working candidate, got {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn happy_eyeballs_single_candidate_behaves_like_direct_connect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let ob = make_direct();
+        let result = ob
+            .connect_tcp_happy_eyeballs(&[addr], tokio::time::Duration::from_millis(50))
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn happy_eyeballs_empty_candidates_errors() {
+        let ob = make_direct();
+        let result = ob
+            .connect_tcp_happy_eyeballs(&[], tokio::time::Duration::from_millis(50))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn happy_eyeballs_all_candidates_failing_returns_error() {
+        let bad1 = unused_addr().await;
+        let bad2 = unused_addr().await;
+        let ob = make_direct();
+        let result = ob
+            .connect_tcp_happy_eyeballs(&[bad1, bad2], tokio::time::Duration::from_millis(50))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn block_outbound_method_drop_sets_silent_drop() {
+        let ob = BlockOutbound::new(BlockOutboundConfig {
+            tag: "blk".into(),
+            method: Some("drop".into()),
+        });
+        assert!(ob.silent_drop);
+
+        let ob_default = BlockOutbound::new(BlockOutboundConfig {
+            tag: "blk".into(),
+            method: None,
+        });
+        assert!(!ob_default.silent_drop);
+
+        // 大小写不敏感
+        let ob_caps = BlockOutbound::new(BlockOutboundConfig {
+            tag: "blk".into(),
+            method: Some("DROP".into()),
+        });
+        assert!(ob_caps.silent_drop);
     }
 }

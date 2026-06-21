@@ -213,6 +213,41 @@
       //   "outbound": "🚀 节点选择"
       // },
 
+      // ── Clash API 模式（clash_mode）──────────────────────────────────────
+      // 仅当 Clash API 当前模式（Dashboard 上切换、或 PATCH /configs 写入）
+      // 等于该值时才命中，大小写不敏感。与 sing-box `clash_mode` 规则条件对齐。
+      // 注意："global"/"direct" 本身没有任何硬编码行为，必须像下面这样显式
+      // 写规则才会生效——把它们放在规则链最前面（仅次于嗅探/DNS 劫持）。
+      // {
+      //   "clash_mode": "global",
+      //   "outbound": "🚀 节点选择"
+      // },
+      // {
+      //   "clash_mode": "direct",
+      //   "outbound": "direct"
+      // },
+
+      // ── 目标地址/端口改写（override_address / override_port）──────────────
+      // 命中后改写实际转发目标，不影响匹配本身用到的原始地址。
+      // 与 sing-box `override_address` / `override_port` 对齐。
+      // 示例：把局域网内某个域名重定向到另一台机器的另一个端口
+      // {
+      //   "domain": "printer.local",
+      //   "override_address": "192.168.1.50",
+      //   "override_port": 9100,
+      //   "outbound": "direct"
+      // },
+
+      // ── UDP 会话超时覆盖（udp_timeout）───────────────────────────────────
+      // 命中后覆盖该连接的 UDP 会话空闲超时（秒），不影响其他规则。
+      // 与 sing-box `udp_timeout` 对齐。游戏/直播等长连接场景适合调大。
+      // {
+      //   "domain_suffix": [".game.example.com"],
+      //   "network": "udp",
+      //   "udp_timeout": 300,
+      //   "outbound": "direct"
+      // },
+
       // ── 国内 IP 和域名 → 直连 ────────────────────────────────────────────
       { "ruleset": "geosite-cn", "outbound": "direct" },
       { "resolve": true, "server": "remote" },
@@ -446,10 +481,22 @@
     {
       "type": "direct",
       "tag": "direct"
+      // network_strategy: "happy_eyeballs" 启用 RFC 8305 风格的多候选地址
+      //   并发拨号：域名同时有 A/AAAA 记录时，错峰尝试多个候选，谁先连上用谁，
+      //   可缓解双栈网络下因某个协议栈故障/丢包造成的连接延迟。
+      //   对齐 sing-box network_strategy。
+      // fallback_delay_ms: 启动下一个候选前的等待毫秒数，默认 250（RFC 8305 推荐值）。
+      // "network_strategy": "happy_eyeballs",
+      // "fallback_delay_ms": 250
     },
     {
       "type": "block",
       "tag": "block"
+      // method: "drop" 时静默丢弃——不关闭连接也不回任何数据，连接会一直挂着
+      //   直到客户端自己放弃。比默认立即关闭更难被探测区分"被拒绝"和
+      //   "网络不通"。对齐 sing-box reject 动作的 method 字段
+      //   （不填或 "default" 为立即关闭，即原有行为）。
+      // "method": "drop"
     }
   ],
 

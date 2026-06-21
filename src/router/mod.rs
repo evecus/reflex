@@ -44,6 +44,7 @@ use tracing::{debug, trace};
 use crate::ruleset::{LoadedRuleSet, MatchTarget, RuleSet};
 
 use crate::{
+    clash_mode::ClashMode,
     config::route::{NetworkFilter, RouteConfig, RouteRuleConfig, RuleSetType},
     experimental::{CacheFile, CacheFileReader},
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
@@ -69,6 +70,30 @@ pub enum RouteAction {
     Resolve {
         server: Option<String>,
     },
+}
+
+/// 规则命中后的动作精细化选项，对齐 sing-box 规则动作的扩展字段
+/// （`override_address` / `override_port` / `udp_timeout`）。
+///
+/// 之所以不直接塞进 `RouteAction::Outbound` 变体里，是因为 `Outbound(String)`
+/// 已经在 dispatcher 里被大量按 tuple variant 模式匹配；新增字段做成平行的
+/// 返回值，可以在不改动现有匹配点签名的前提下扩展功能。
+/// `final`（兜底动作）没有对应规则，因此没有 options，返回空值。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteOptions {
+    /// 命中后改写目标地址（IP 或域名），对齐 sing-box `override_address`。
+    pub override_address: Option<String>,
+    /// 命中后改写目标端口，对齐 sing-box `override_port`。
+    pub override_port: Option<u16>,
+    /// 命中后覆盖 UDP 会话空闲超时（秒），对齐 sing-box `udp_timeout`。
+    pub udp_timeout: Option<u64>,
+}
+
+impl RouteOptions {
+    /// 是否带有任何需要在转发前处理的覆盖项。
+    pub fn is_empty(&self) -> bool {
+        self.override_address.is_none() && self.override_port.is_none() && self.udp_timeout.is_none()
+    }
 }
 
 // ── 规则集元数据（规则数量 + 加载时间）────────────────────────────────────────
@@ -118,14 +143,22 @@ pub struct Router {
     route_config: RouteConfig,
     /// 出口网络配置（auto_detect_interface / default_interface / default_mark）
     pub egress: NetworkEgressConfig,
+    /// Clash API 当前模式的共享只读引用，供 `clash_mode` 规则条件匹配使用。
+    clash_mode: Arc<ClashMode>,
 }
 
 impl Router {
     /// 从配置构建路由器。
+    ///
+    /// `clash_mode`：Clash API 当前模式的共享状态，用于 `clash_mode` 规则条件。
+    /// 调用方（`app/mod.rs`）应在构建 `Router`、`DnsResolver`、`ClashApi` 三者前
+    /// 先创建好同一个 `Arc<ClashMode>` 实例并分别传入，这样 `PATCH /configs`
+    /// 写入的模式变化才能被路由和 DNS 规则实时感知。
     pub fn from_config(
         config: &RouteConfig,
         cache_reader: Option<&CacheFileReader>,
         cache_writer: Option<&CacheFile>,
+        clash_mode: Arc<ClashMode>,
     ) -> anyhow::Result<Self> {
         let mut rulesets: HashMap<String, Arc<RuleSet>> = HashMap::new();
         let mut ruleset_meta: HashMap<String, RuleSetMeta> = HashMap::new();
@@ -204,6 +237,7 @@ impl Router {
             ruleset_meta,
             route_config: config.clone(),
             egress,
+            clash_mode,
         })
     }
 
@@ -278,7 +312,7 @@ impl Router {
         Ok(())
     }
 
-    pub fn route_tcp(&self, conn: &InboundTcpStream) -> (&RouteAction, &str, &str) {
+    pub fn route_tcp(&self, conn: &InboundTcpStream) -> (&RouteAction, &str, &str, &RouteOptions) {
         self.route(
             &conn.inbound_tag,
             Some(NetworkKind::Tcp),
@@ -292,7 +326,7 @@ impl Router {
         &self,
         conn: &InboundTcpStream,
         target: &Target,
-    ) -> (&RouteAction, &str, &str) {
+    ) -> (&RouteAction, &str, &str, &RouteOptions) {
         self.route_indexed(
             &self.idx_no_sniff,
             &conn.inbound_tag,
@@ -308,7 +342,7 @@ impl Router {
         &self,
         conn: &InboundTcpStream,
         target: &Target,
-    ) -> (&RouteAction, &str, &str) {
+    ) -> (&RouteAction, &str, &str, &RouteOptions) {
         self.route_indexed(
             &self.idx_no_sniff_resolve,
             &conn.inbound_tag,
@@ -324,7 +358,7 @@ impl Router {
         &self,
         packet: &InboundUdpPacket,
         target: &Target,
-    ) -> (&RouteAction, &str, &str) {
+    ) -> (&RouteAction, &str, &str, &RouteOptions) {
         self.route_indexed(
             &self.idx_no_sniff_resolve,
             &packet.inbound_tag,
@@ -338,7 +372,10 @@ impl Router {
 
     /// UDP 命中 Sniff 规则后重新路由：跳过所有 Sniff 规则，继续匹配后续规则。
     /// 与 TCP 的 route_tcp_after_sniff 对称，修复 UDP Sniff 降级直接跳到 final 的问题。
-    pub fn route_udp_after_sniff(&self, packet: &InboundUdpPacket) -> (&RouteAction, &str, &str) {
+    pub fn route_udp_after_sniff(
+        &self,
+        packet: &InboundUdpPacket,
+    ) -> (&RouteAction, &str, &str, &RouteOptions) {
         self.route_indexed(
             &self.idx_no_sniff,
             &packet.inbound_tag,
@@ -350,7 +387,7 @@ impl Router {
         )
     }
 
-    pub fn route_udp(&self, packet: &InboundUdpPacket) -> (&RouteAction, &str, &str) {
+    pub fn route_udp(&self, packet: &InboundUdpPacket) -> (&RouteAction, &str, &str, &RouteOptions) {
         self.route(
             &packet.inbound_tag,
             Some(NetworkKind::Udp),
@@ -368,15 +405,29 @@ impl Router {
         target: &Target,
         sniffed_protocol: Option<&str>,
         src_ip: Option<IpAddr>,
-    ) -> (&RouteAction, &str, &str) {
+    ) -> (&RouteAction, &str, &str, &RouteOptions) {
+        // 只读一次当前 Clash API 模式，避免在循环里反复加读锁。
+        let current_mode = self.clash_mode.get();
         for rule in &self.rules {
-            if rule.matches(inbound_tag, network, target, sniffed_protocol, src_ip) {
+            if rule.matches(
+                inbound_tag,
+                network,
+                target,
+                sniffed_protocol,
+                src_ip,
+                &current_mode,
+            ) {
                 trace!(inbound=%inbound_tag, target=%target, action=?rule.action, "route hit");
-                return (&rule.action, &rule.rule_display.0, &rule.rule_display.1);
+                return (
+                    &rule.action,
+                    &rule.rule_display.0,
+                    &rule.rule_display.1,
+                    &rule.options,
+                );
             }
         }
         debug!(inbound=%inbound_tag, target=%target, action=?self.default, "route default");
-        (&self.default, "final", "")
+        (&self.default, "final", "", &EMPTY_ROUTE_OPTIONS)
     }
 
     /// 按预计算索引遍历（跳过特定 action 规则，零分支判断）
@@ -390,18 +441,39 @@ impl Router {
         sniffed_protocol: Option<&str>,
         src_ip: Option<IpAddr>,
         label: &str,
-    ) -> (&RouteAction, &str, &str) {
+    ) -> (&RouteAction, &str, &str, &RouteOptions) {
+        let current_mode = self.clash_mode.get();
         for &i in indices {
             let rule = &self.rules[i];
-            if rule.matches(inbound_tag, network, target, sniffed_protocol, src_ip) {
+            if rule.matches(
+                inbound_tag,
+                network,
+                target,
+                sniffed_protocol,
+                src_ip,
+                &current_mode,
+            ) {
                 trace!(inbound=%inbound_tag, target=%target, action=?rule.action, label, "route hit");
-                return (&rule.action, &rule.rule_display.0, &rule.rule_display.1);
+                return (
+                    &rule.action,
+                    &rule.rule_display.0,
+                    &rule.rule_display.1,
+                    &rule.options,
+                );
             }
         }
         debug!(inbound=%inbound_tag, target=%target, action=?self.default, label, "route default");
-        (&self.default, "final", "")
+        (&self.default, "final", "", &EMPTY_ROUTE_OPTIONS)
     }
 }
+
+/// `final` 兜底动作没有对应的规则配置，因此没有 options；用一个静态空值
+/// 避免每次调用都构造一个临时 `RouteOptions`。
+static EMPTY_ROUTE_OPTIONS: RouteOptions = RouteOptions {
+    override_address: None,
+    override_port: None,
+    udp_timeout: None,
+};
 
 // ── 编译后的单条规则 ──────────────────────────────────────────────────────────
 
@@ -420,7 +492,12 @@ struct CompiledRule {
     private_ip: bool,
     /// 反转所有匹配条件（对应 `invert`）
     invert: bool,
+    /// 仅当 Clash API 当前模式等于该值时才命中（对应 `clash_mode`），
+    /// 大小写不敏感比较；None 表示不限制模式。
+    clash_mode_filter: Option<String>,
     action: RouteAction,
+    /// 命中后的动作精细化选项（override_address/override_port/udp_timeout）
+    options: RouteOptions,
     rule_display: (String, String),
 }
 
@@ -577,6 +654,8 @@ impl CompiledRule {
             ("RESOLVE".to_string(), String::new())
         } else if rule.hijack_dns {
             ("HIJACK-DNS".to_string(), String::new())
+        } else if let Some(mode) = &rule.clash_mode {
+            ("CLASH-MODE".to_string(), mode.clone())
         } else {
             ("MATCH".to_string(), String::new())
         };
@@ -592,12 +671,19 @@ impl CompiledRule {
             domain_regex,
             private_ip: rule.private_ip,
             invert: rule.invert,
+            clash_mode_filter: rule.clash_mode.clone(),
             action,
+            options: RouteOptions {
+                override_address: rule.override_address.clone(),
+                override_port: rule.override_port,
+                udp_timeout: rule.udp_timeout,
+            },
             rule_display,
         })
     }
 
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn matches(
         &self,
         inbound_tag: &str,
@@ -605,7 +691,17 @@ impl CompiledRule {
         target: &Target,
         sniffed_protocol: Option<&str>,
         src_ip: Option<IpAddr>,
+        current_mode: &str,
     ) -> bool {
+        // 0. Clash API 模式过滤（对应 `clash_mode`，不受 invert 影响）。
+        //    和 sing-box route/rule/rule_item_clash_mode.go 一样，作为硬性
+        //    前置条件处理：大小写不敏感比较，未配置时不限制。
+        if let Some(mode) = &self.clash_mode_filter {
+            if !mode.eq_ignore_ascii_case(current_mode) {
+                return false;
+            }
+        }
+
         // 1. 入站 tag 过滤（不受 invert 影响）
         if !self.inbound_tags.is_empty() && !self.inbound_tags.iter().any(|t| t == inbound_tag) {
             return false;
@@ -1040,6 +1136,7 @@ mod tests {
                 default_mark: None,
             },
             egress: NetworkEgressConfig::default(),
+            clash_mode: Arc::new(ClashMode::new("rule")),
         }
     }
 
@@ -1067,6 +1164,7 @@ mod tests {
             hijack_dns: false,
             invert: false,
             outbound: outbound.into(),
+            ..Default::default()
         }
     }
 
@@ -1599,7 +1697,7 @@ mod hijack_dns_tests {
     #[test]
     fn hijack_dns_with_protocol_dns_action() {
         let config = make_config(vec![dns_protocol_rule()]);
-        let router = Router::from_config(&config, None, None).unwrap();
+        let router = Router::from_config(&config, None, None, Arc::new(ClashMode::new("rule"))).unwrap();
         let t = Target::Socket("8.8.8.8:53".parse().unwrap());
         assert_eq!(
             router
@@ -1612,7 +1710,7 @@ mod hijack_dns_tests {
     #[test]
     fn hijack_dns_with_inbound_action() {
         let config = make_config(vec![dns_inbound_rule()]);
-        let router = Router::from_config(&config, None, None).unwrap();
+        let router = Router::from_config(&config, None, None, Arc::new(ClashMode::new("rule"))).unwrap();
         let t = Target::Domain("example.com".into(), 53);
         assert_eq!(
             router
@@ -1629,9 +1727,100 @@ mod hijack_dns_tests {
             ..Default::default()
         };
         let config = make_config(vec![rule]);
-        let result = Router::from_config(&config, None, None);
+        let result = Router::from_config(&config, None, None, Arc::new(ClashMode::new("rule")));
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
         assert!(msg.contains("hijack_dns"));
+    }
+
+    // ── clash_mode 规则条件 ──────────────────────────────────────────────
+
+    #[test]
+    fn clash_mode_only_matches_when_mode_equal() {
+        let mut global_rule = empty_rule("global-selector");
+        global_rule.clash_mode = Some("global".to_string());
+        let r = make_router(vec![global_rule], "proxy");
+
+        let t = Target::Domain("example.com".into(), 443);
+
+        // 默认 mode = "rule"（make_router 内部用 ClashMode::new("rule")），
+        // clash_mode=global 的规则不应命中，落到 final。
+        assert_eq!(
+            route(&r, "in", NetworkKind::Tcp, &t),
+            &RouteAction::Outbound("proxy".into())
+        );
+
+        // 切到 global 模式后，规则应该命中。
+        r.clash_mode.set("global");
+        assert_eq!(
+            route(&r, "in", NetworkKind::Tcp, &t),
+            &RouteAction::Outbound("global-selector".into())
+        );
+
+        // 大小写不敏感比较，对齐 sing-box strings.EqualFold。
+        r.clash_mode.set("GLOBAL");
+        assert_eq!(
+            route(&r, "in", NetworkKind::Tcp, &t),
+            &RouteAction::Outbound("global-selector".into())
+        );
+
+        // 切回 rule 模式后规则不再命中。
+        r.clash_mode.set("rule");
+        assert_eq!(
+            route(&r, "in", NetworkKind::Tcp, &t),
+            &RouteAction::Outbound("proxy".into())
+        );
+    }
+
+    #[test]
+    fn clash_mode_not_set_in_has_conditions_alone() {
+        // 单独一个 clash_mode 字段也应该被 has_conditions() 认为是有效条件
+        // （否则会被规则校验逻辑当成空规则报错）。
+        let rule = RouteRuleConfig {
+            clash_mode: Some("global".to_string()),
+            outbound: "proxy".into(),
+            ..Default::default()
+        };
+        assert!(rule.has_conditions());
+    }
+
+    // ── override_address / override_port / udp_timeout（RouteOptions）─────
+
+    #[test]
+    fn override_address_and_port_carried_in_route_options() {
+        let mut rule = empty_rule("direct");
+        rule.domain = vec!["printer.local".into()];
+        rule.override_address = Some("192.168.1.50".to_string());
+        rule.override_port = Some(9100);
+        let r = make_router(vec![rule], "proxy");
+
+        let t = Target::Domain("printer.local".into(), 80);
+        let (action, _rt, _rp, opts) = r.route("in", Some(NetworkKind::Tcp), &t, None, None);
+        assert_eq!(action, &RouteAction::Outbound("direct".into()));
+        assert_eq!(opts.override_address.as_deref(), Some("192.168.1.50"));
+        assert_eq!(opts.override_port, Some(9100));
+    }
+
+    #[test]
+    fn udp_timeout_carried_in_route_options() {
+        let mut rule = empty_rule("direct");
+        rule.network = Some(NetworkFilter::Udp);
+        rule.domain_suffix = vec![".game.example.com".into()];
+        rule.udp_timeout = Some(300);
+        let r = make_router(vec![rule], "proxy");
+
+        let t = Target::Domain("a.game.example.com".into(), 12345);
+        let (_action, _rt, _rp, opts) = r.route("in", Some(NetworkKind::Udp), &t, None, None);
+        assert_eq!(opts.udp_timeout, Some(300));
+    }
+
+    #[test]
+    fn final_action_has_empty_route_options() {
+        // 没有任何规则命中、落到 final 的情况，options 应该是空的。
+        let r = make_router(vec![], "proxy");
+        let t = Target::Domain("nowhere.example.com".into(), 443);
+        let (_action, rt, _rp, opts) = r.route("in", Some(NetworkKind::Tcp), &t, None, None);
+        assert_eq!(rt, "final");
+        assert!(opts.is_empty());
     }
 }

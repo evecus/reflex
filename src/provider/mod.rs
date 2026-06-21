@@ -195,6 +195,7 @@ mod tests {
             OutboundConfig::Direct(DirectOutboundConfig {
                 tag: name.to_string(),
                 bind_address: None,
+                ..Default::default()
             }),
         )
     }
