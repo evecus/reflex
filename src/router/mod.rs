@@ -1612,7 +1612,7 @@ mod tests {
         assert_eq!(r.rules.len(), 2);
         assert_eq!(r.idx_no_sniff, vec![1]);
         let t = Target::Domain("baidu.cn".into(), 80);
-        let (action, _, _) = r.route_indexed(
+        let (action, _, _, _) = r.route_indexed(
             &r.idx_no_sniff,
             "mixed-in",
             Some(NetworkKind::Tcp),
@@ -1657,80 +1657,6 @@ mod tests {
                 "should not match public IP: {ip}"
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod hijack_dns_tests {
-    use super::*;
-    use crate::config::route::{RouteConfig, RouteRuleConfig};
-
-    fn make_config(rules: Vec<RouteRuleConfig>) -> RouteConfig {
-        RouteConfig {
-            rules,
-            r#final: "proxy".to_string(),
-            rule_set: vec![],
-            resolve_dns: false,
-            ipv6: true,
-            auto_detect_interface: false,
-            default_interface: None,
-            default_mark: None,
-        }
-    }
-
-    fn dns_protocol_rule() -> RouteRuleConfig {
-        RouteRuleConfig {
-            hijack_dns: true,
-            protocol: vec!["dns".to_string()],
-            ..Default::default()
-        }
-    }
-
-    fn dns_inbound_rule() -> RouteRuleConfig {
-        RouteRuleConfig {
-            hijack_dns: true,
-            inbound: vec!["dns-in".to_string()],
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn hijack_dns_with_protocol_dns_action() {
-        let config = make_config(vec![dns_protocol_rule()]);
-        let router = Router::from_config(&config, None, None, Arc::new(ClashMode::new("rule"))).unwrap();
-        let t = Target::Socket("8.8.8.8:53".parse().unwrap());
-        assert_eq!(
-            router
-                .route("any-in", Some(NetworkKind::Udp), &t, Some("dns"), None)
-                .0,
-            &RouteAction::DnsOut
-        );
-    }
-
-    #[test]
-    fn hijack_dns_with_inbound_action() {
-        let config = make_config(vec![dns_inbound_rule()]);
-        let router = Router::from_config(&config, None, None, Arc::new(ClashMode::new("rule"))).unwrap();
-        let t = Target::Domain("example.com".into(), 53);
-        assert_eq!(
-            router
-                .route("dns-in", Some(NetworkKind::Udp), &t, None, None)
-                .0,
-            &RouteAction::DnsOut
-        );
-    }
-
-    #[test]
-    fn bare_hijack_dns_is_error() {
-        let rule = RouteRuleConfig {
-            hijack_dns: true,
-            ..Default::default()
-        };
-        let config = make_config(vec![rule]);
-        let result = Router::from_config(&config, None, None, Arc::new(ClashMode::new("rule")));
-        assert!(result.is_err());
-        let msg = result.err().unwrap().to_string();
-        assert!(msg.contains("hijack_dns"));
     }
 
     // ── clash_mode 规则条件 ──────────────────────────────────────────────
@@ -1822,5 +1748,79 @@ mod hijack_dns_tests {
         let (_action, rt, _rp, opts) = r.route("in", Some(NetworkKind::Tcp), &t, None, None);
         assert_eq!(rt, "final");
         assert!(opts.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod hijack_dns_tests {
+    use super::*;
+    use crate::config::route::{RouteConfig, RouteRuleConfig};
+
+    fn make_config(rules: Vec<RouteRuleConfig>) -> RouteConfig {
+        RouteConfig {
+            rules,
+            r#final: "proxy".to_string(),
+            rule_set: vec![],
+            resolve_dns: false,
+            ipv6: true,
+            auto_detect_interface: false,
+            default_interface: None,
+            default_mark: None,
+        }
+    }
+
+    fn dns_protocol_rule() -> RouteRuleConfig {
+        RouteRuleConfig {
+            hijack_dns: true,
+            protocol: vec!["dns".to_string()],
+            ..Default::default()
+        }
+    }
+
+    fn dns_inbound_rule() -> RouteRuleConfig {
+        RouteRuleConfig {
+            hijack_dns: true,
+            inbound: vec!["dns-in".to_string()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hijack_dns_with_protocol_dns_action() {
+        let config = make_config(vec![dns_protocol_rule()]);
+        let router = Router::from_config(&config, None, None, Arc::new(ClashMode::new("rule"))).unwrap();
+        let t = Target::Socket("8.8.8.8:53".parse().unwrap());
+        assert_eq!(
+            router
+                .route("any-in", Some(NetworkKind::Udp), &t, Some("dns"), None)
+                .0,
+            &RouteAction::DnsOut
+        );
+    }
+
+    #[test]
+    fn hijack_dns_with_inbound_action() {
+        let config = make_config(vec![dns_inbound_rule()]);
+        let router = Router::from_config(&config, None, None, Arc::new(ClashMode::new("rule"))).unwrap();
+        let t = Target::Domain("example.com".into(), 53);
+        assert_eq!(
+            router
+                .route("dns-in", Some(NetworkKind::Udp), &t, None, None)
+                .0,
+            &RouteAction::DnsOut
+        );
+    }
+
+    #[test]
+    fn bare_hijack_dns_is_error() {
+        let rule = RouteRuleConfig {
+            hijack_dns: true,
+            ..Default::default()
+        };
+        let config = make_config(vec![rule]);
+        let result = Router::from_config(&config, None, None, Arc::new(ClashMode::new("rule")));
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(msg.contains("hijack_dns"));
     }
 }
