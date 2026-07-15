@@ -82,7 +82,9 @@ impl DnsInbound {
 
 async fn run_udp(socket: UdpSocket, tx: DnsQueryTx, tag: Arc<String>) -> anyhow::Result<()> {
     let socket = Arc::new(socket);
-    let mut buf = vec![0u8; 4096];
+    // 旧实现缓冲区仅 4096 字节，无法容纳 EDNS0 大包（RFC 6891 允许至 65535）。
+    // DNSSEC 响应或大 OPT 记录会被静默截断，导致解析失败。
+    let mut buf = vec![0u8; 65535];
 
     loop {
         let (n, from) = match socket.recv_from(&mut buf).await {
@@ -162,7 +164,9 @@ async fn handle_tcp_conn(
             Err(e) => return Err(e.into()),
         };
 
-        anyhow::ensure!(len <= 4096, "DNS TCP message too large: {len}");
+        // DNS-over-TCP 消息最大 65535 字节（2 字节长度前缀的极限）。
+        // 旧实现限制 4096 会拒绝合法的 DNSSEC 大响应。
+        anyhow::ensure!(len <= 65535, "DNS TCP message too large: {len}");
 
         let mut msg_buf = vec![0u8; len];
         stream.read_exact(&mut msg_buf).await?;
