@@ -128,13 +128,13 @@ fn hmac_hash(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
     }
     // inner = H(ipad || data)
     let mut inner = Blake2s256::new();
-    inner.update(&ipad);
+    inner.update(ipad);
     inner.update(data);
     let inner_hash = inner.finalize();
     // outer = H(opad || inner)
     let mut outer = Blake2s256::new();
-    outer.update(&opad);
-    outer.update(&inner_hash);
+    outer.update(opad);
+    outer.update(inner_hash);
     let r = outer.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&r);
