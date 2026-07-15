@@ -25,8 +25,6 @@ fn raise_nofile_limit() {
                 if libc::setrlimit(libc::RLIMIT_NOFILE, &rl) != 0 {
                     let e = std::io::Error::last_os_error();
                     eprintln!("[warn] setrlimit RLIMIT_NOFILE failed: {e}");
-                } else {
-                    eprintln!("[info] raised RLIMIT_NOFILE to {target}");
                 }
             }
         }
