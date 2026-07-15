@@ -1063,7 +1063,11 @@ fn load_ruleset_remote(
 
 fn download_bytes(url: &str, tag: &str) -> anyhow::Result<Vec<u8>> {
     use std::io::Read;
+    use std::time::Duration;
+    // 旧实现无超时：慢速/挂起的服务器会无限阻塞调用线程。
+    // 设置 30s 总超时（含连接阶段），与 sing-box downloadZIP 行为对齐。
     let resp = ureq::get(url)
+        .timeout(Duration::from_secs(30))
         .call()
         .map_err(|e| anyhow::anyhow!("rule_set '{tag}': download failed from '{url}': {e}"))?;
     let mut buf = Vec::new();
