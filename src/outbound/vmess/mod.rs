@@ -355,7 +355,13 @@ where
                 }
                 Poll::Ready(Some(Ok(msg))) => match msg {
                     Message::Binary(data) => *this.read_buf = Bytes::from(data),
+                    Message::Ping(_) | Message::Pong(_) => {
+                        // tokio-tungstenite 默认在底层自动回 Pong；显式忽略即可，
+                        // 避免旧实现 `_ => {}` 把 Ping/Pong 当噪声丢掉后被对端判定超时。
+                        continue;
+                    }
                     Message::Close(_) => return Poll::Ready(Ok(())),
+                    // Text 在 VMess over WS 不会出现，保留原 fallthrough 语义。
                     _ => {}
                 },
             }
