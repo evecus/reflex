@@ -351,10 +351,11 @@ pub struct UrlTestOutbound {
     selected: Arc<RwLock<Option<String>>>,
     latencies: Arc<Mutex<HashMap<String, Option<u64>>>>,
     last_check: Arc<Mutex<Option<Instant>>>,
-    /// 原子锁：防止多个并发连接同时触发探测
-    is_checking: AtomicBool,
-    /// Arc 包装的 is_checking，供后台 task 使用（AtomicBool 不能直接 clone）
-    is_checking_arc: Arc<AtomicBool>,
+    /// 原子锁：防止多个并发连接同时触发探测。
+    /// 旧实现有两个独立 AtomicBool（is_checking + is_checking_arc），
+    /// compare_exchange 操作前者，后台 task 重置后者 → 前者永远为 true，
+    /// 导致首次探测后再也不会触发健康检查。合并为单一 Arc<AtomicBool>。
+    is_checking: Arc<AtomicBool>,
     registry: OutboundRegistry,
 }
 
@@ -371,15 +372,13 @@ impl UrlTestOutbound {
         config.interval_duration()?;
         config.idle_timeout_duration()?;
         let all_tags = config.outbounds.clone();
-        let is_checking_inner = Arc::new(AtomicBool::new(false));
         Ok(Self {
             config,
             all_tags: RwLock::new(all_tags),
             selected: Arc::new(RwLock::new(None)),
             latencies: Arc::new(Mutex::new(HashMap::new())),
             last_check: Arc::new(Mutex::new(None)),
-            is_checking: AtomicBool::new(false),
-            is_checking_arc: is_checking_inner,
+            is_checking: Arc::new(AtomicBool::new(false)),
             registry,
         })
     }
@@ -450,7 +449,7 @@ impl UrlTestOutbound {
             let selected = self.selected.clone();
             let latencies = self.latencies.clone();
             let last_check = self.last_check.clone();
-            let is_checking = self.is_checking_arc.clone();
+            let is_checking = self.is_checking.clone();
             tokio::spawn(async move {
                 UrlTestOutbound::refresh_background(
                     config, all_tags, registry, selected, latencies, last_check,
@@ -690,30 +689,60 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     R: AsyncRead + AsyncWrite + Unpin,
 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     let (mut local_r, mut local_w) = tokio::io::split(local);
     let (mut remote_r, mut remote_w) = tokio::io::split(remote);
 
-    // 用 pin! 让两个 copy future 可以在 select! 里同时轮询
-    let upload = tokio::io::copy(&mut local_r, &mut remote_w);
-    let download = tokio::io::copy(&mut remote_r, &mut local_w);
-    let mut interrupt = interrupt_rx;
-
-    tokio::pin!(upload, download);
-
     let mut up_bytes: u64 = 0;
     let mut dn_bytes: u64 = 0;
+    let mut interrupt = interrupt_rx;
 
-    // 简化：relay 完整完成（任意方向关闭），或收到中断信号
-    tokio::select! {
-        res = &mut upload => {
-            up_bytes = res.unwrap_or(0);
-            // 继续等 download 方向，但不必要；直接返回
-        }
-        res = &mut download => {
-            dn_bytes = res.unwrap_or(0);
-        }
-        _ = &mut interrupt => {
-            // 中断：两端的 split 保有者在 drop 时自动关闭
+    let mut up_buf = [0u8; 16384];
+    let mut dn_buf = [0u8; 16384];
+    let mut up_done = false;
+    let mut dn_done = false;
+
+    // 旧实现用 select! 只等第一个分支完成，另一个方向的字节计数永远为 0。
+    // 改为循环：两个方向独立推进，各自 EOF 后半关闭对端写端，直到双方向均完成
+    // 或收到中断信号。字节计数准确反映实际转发的数据量。
+    while !up_done || !dn_done {
+        tokio::select! {
+            res = local_r.read(&mut up_buf), if !up_done => {
+                match res {
+                    Ok(0) | Err(_) => {
+                        up_done = true;
+                        let _ = remote_w.shutdown().await;
+                    }
+                    Ok(n) => {
+                        if remote_w.write_all(&up_buf[..n]).await.is_err() {
+                            up_done = true;
+                            dn_done = true;
+                        } else {
+                            up_bytes += n as u64;
+                        }
+                    }
+                }
+            }
+            res = remote_r.read(&mut dn_buf), if !dn_done => {
+                match res {
+                    Ok(0) | Err(_) => {
+                        dn_done = true;
+                        let _ = local_w.shutdown().await;
+                    }
+                    Ok(n) => {
+                        if local_w.write_all(&dn_buf[..n]).await.is_err() {
+                            up_done = true;
+                            dn_done = true;
+                        } else {
+                            dn_bytes += n as u64;
+                        }
+                    }
+                }
+            }
+            _ = &mut interrupt => {
+                break;
+            }
         }
     }
 
@@ -755,6 +784,26 @@ fn parse_probe_url(url: &str) -> anyhow::Result<(String, u16)> {
     };
     let authority = rest.split('/').next().unwrap_or(rest);
     anyhow::ensure!(!authority.is_empty(), "url-test url missing host: '{url}'");
+
+    // 正确处理 IPv6 字面量（RFC 3986：[IPv6]:port）。
+    // 旧实现用 rsplit_once(':') 在无端口的 IPv6 上会把地址内的冒号
+    // 当作 host:port 分隔符，且保留方括号导致 connect_tcp 失败。
+    if let Some(stripped) = authority.strip_prefix('[') {
+        let close = stripped
+            .find(']')
+            .ok_or_else(|| anyhow::anyhow!("url-test url: unterminated IPv6 literal"))?;
+        let host = stripped[..close].to_string();
+        let after = &stripped[close + 1..];
+        let port = if let Some(p) = after.strip_prefix(':') {
+            p.parse::<u16>()
+                .map_err(|_| anyhow::anyhow!("url-test url: invalid IPv6 port"))?
+        } else {
+            default_port
+        };
+        anyhow::ensure!(!host.is_empty(), "url-test url missing host: '{url}'");
+        return Ok((host, port));
+    }
+
     let (host, port) = if let Some((host, port)) = authority.rsplit_once(':') {
         (host.to_string(), port.parse()?)
     } else {
@@ -801,14 +850,29 @@ async fn probe_via_outbound(
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
 
-    // 3. 读取响应首行，确认收到 HTTP 响应即视为成功
-    //    （不检查状态码：204、200、301 均视为节点可用）
+    // 3. 读取响应首行，确认收到 HTTP 响应并检查状态码。
+    //    旧实现不检查状态码，导致 502/503/4xx 错误页也判定为"可用"。
+    //    现接受 2xx/3xx（200/204/301/302 等），拒绝 4xx/5xx。
     let mut buf = vec![0u8; 256];
     let n = stream.read(&mut buf).await?;
     anyhow::ensure!(n > 0, "probe: empty response from {url}");
     anyhow::ensure!(
         buf[..n].starts_with(b"HTTP/"),
         "probe: non-HTTP response from {url}"
+    );
+    // 解析状态行 "HTTP/1.1 200 OK"
+    let status_line = std::str::from_utf8(&buf[..n])
+        .ok()
+        .and_then(|s| s.lines().next())
+        .unwrap_or("");
+    let status_code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0);
+    anyhow::ensure!(
+        status_code >= 200 && status_code < 400,
+        "probe: unhealthy status {status_code} from {url}"
     );
     Ok(())
 }
