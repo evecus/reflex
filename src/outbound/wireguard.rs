@@ -42,7 +42,6 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce,
 };
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use tokio::{net::UdpSocket, sync::Mutex, time};
 use tracing::{info, warn};
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
@@ -86,30 +85,57 @@ fn decode_key_base64(s: &str) -> anyhow::Result<[u8; 32]> {
     Ok(arr)
 }
 
-// ── BLAKE2s-256（用 SHA-256 近似，实际 WG 使用 BLAKE2s） ─────────────────────
+// ── BLAKE2s-256（WireGuard Noise_IKpsk2 规范要求）─────────────────────────────
 //
-// 注意：WireGuard 规范使用 BLAKE2s，但 BLAKE2s 不在项目依赖中。
-// 我们用 BLAKE3（已有）或 SHA-256（已有）作为临时替换。
-// 生产部署应添加 blake2 crate。此处使用 SHA-256 以保证可编译性，
-// 并在注释中标注 TODO。
+// WireGuard 规范（Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s）规定使用 BLAKE2s-256
+// 作为哈希与 HMAC 基元。旧实现用 SHA-256 近似，导致握手 KDF/MAC 输出与真实
+// WireGuard 服务端不匹配，任何标准 WG 服务端都会拒绝握手。
+// blake2 crate 已在 outbound-net feature 下作为依赖项，直接使用即可。
 
-// TODO: 替换为 blake2::Blake2s256
 fn hash(data: &[u8]) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(data);
-    let r = h.finalize();
+    use blake2::Blake2s256;
+    use blake2::Digest;
+    let r = Blake2s256::digest(data);
     let mut out = [0u8; 32];
     out.copy_from_slice(&r);
     out
 }
 
 fn hmac_hash(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    type HmacSha256 = Hmac<Sha256>;
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC key size error");
-    mac.update(data);
-    let r = mac.finalize().into_bytes();
+    use blake2::{Blake2s256, Digest};
+    // HMAC-BLAKE2s-256（RFC 2104），WireGuard Noise IKpsk2 的 MAC 构造即此。
+    //
+    // 注意：不能使用 hmac 0.12 的 Hmac<Blake2s256>——blake2 0.10 的 Blake2s256
+    // 使用 Lazy buffer，而 hmac::Hmac<D> 要求 D::BufferKind == Eager，二者
+    // 类型不兼容，无法编译。故按 RFC 2104 手动实现：
+    //   HMAC(K, m) = H( (K' ⊕ opad) || H( (K' ⊕ ipad) || m ) )
+    //   block size = 64（BLAKE2s），ipad=0x36，opad=0x5c，K' 为 K 零填充到 64 字节。
+    const BLOCK_SIZE: usize = 64;
+    let mut k_pad = [0u8; BLOCK_SIZE];
+    // WireGuard 中 key 恒为 32 字节，必然 <= BLOCK_SIZE，直接零填充即可。
+    // 此处仍按 RFC 2104 处理超长 key 的边界情况以保证通用正确性。
+    if key.len() <= BLOCK_SIZE {
+        k_pad[..key.len()].copy_from_slice(key);
+    } else {
+        let h = Blake2s256::digest(key);
+        k_pad[..32].copy_from_slice(&h);
+    }
+    let mut ipad = [0u8; BLOCK_SIZE];
+    let mut opad = [0u8; BLOCK_SIZE];
+    for i in 0..BLOCK_SIZE {
+        ipad[i] = k_pad[i] ^ 0x36;
+        opad[i] = k_pad[i] ^ 0x5c;
+    }
+    // inner = H(ipad || data)
+    let mut inner = Blake2s256::new();
+    inner.update(&ipad);
+    inner.update(data);
+    let inner_hash = inner.finalize();
+    // outer = H(opad || inner)
+    let mut outer = Blake2s256::new();
+    outer.update(&opad);
+    outer.update(&inner_hash);
+    let r = outer.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&r);
     out
@@ -717,6 +743,7 @@ fn ip_checksum(header: &[u8]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     #[test]
     fn decode_key_valid() {
