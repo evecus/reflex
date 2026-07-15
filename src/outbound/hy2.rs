@@ -599,15 +599,18 @@ impl Outbound for Hy2Outbound {
         debug!(tag = %self.config.tag, target = %packet.target, session_id, "hy2 udp datagram sent");
 
         // 若有后续上行包，spawn task 持续发送
+        // 注意：必须复用同一个 session_id，仅递增 packet_id。
+        // 旧实现在此处又调用了一次 fetch_add 取了新的 session_id，
+        // 导致同一会话的后续包被服务端当作新会话处理，回包无法关联。
         if let Some(mut upstream_rx) = packet.upstream_rx.take() {
             let qconn_send = qconn.clone();
             let addr_clone = addr.clone();
-            let session_id_up = self.udp_session_id.fetch_add(1, Ordering::Relaxed);
             tokio::spawn(async move {
-                // 单调递增 packet_id，保证同 session 内分片重组不会错配
-                let mut pkt_id: u16 = 0;
+                // 首包已用 packet_id=0 发送，这里从 1 开始单调递增，
+                // 保证同 session 内分片重组不会错配。
+                let mut pkt_id: u16 = 1;
                 while let Some(data) = upstream_rx.recv().await {
-                    if send_udp_fragmented(&qconn_send, session_id_up, pkt_id, &addr_clone, &data)
+                    if send_udp_fragmented(&qconn_send, session_id, pkt_id, &addr_clone, &data)
                         .is_err()
                     {
                         break;
