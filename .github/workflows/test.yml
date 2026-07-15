@@ -148,11 +148,10 @@ jobs:
 
 
       - name: Create GitHub Release
-        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name:   test
-          name:       reflex test
+          name:       "reflex test"
           prerelease: true
           draft:      false
           files:      dist/reflex-linux-aarch64
