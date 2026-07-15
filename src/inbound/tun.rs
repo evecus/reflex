@@ -65,7 +65,7 @@ use bytes::Bytes;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
-    sync::{mpsc, Mutex, RwLock},
+    sync::{mpsc, Mutex},
 };
 use tracing::{debug, error, info, warn};
 #[cfg(not(target_os = "windows"))]
@@ -90,6 +90,36 @@ const IPV6_VERSION: u8 = 6;
 const NAT_PORT_START: u16 = 10000;
 const NAT_PORT_END: u16 = 60000;
 
+/// 默认 loopback 地址（参照 sing-tun TunOptions.Inet4LoopbackAddress 默认值）
+const INET4_LOOPBACK: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
+const INET6_LOOPBACK: Ipv6Addr = Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1);
+
+/// 判断 IPv4 地址是否在 TUN 子网内（用于 acceptLoop 目标重写）。
+/// 参照 sing-tun acceptLoop L332-346：若原始目标落在 TUN 前缀内，
+/// 改写为 127.0.0.1，使应用能通过 TUN 地址访问本地回环服务。
+fn addr_in_prefix_v4(addr: Ipv4Addr, network: Ipv4Addr, prefix_len: u8) -> bool {
+    if prefix_len == 0 {
+        return true;
+    }
+    let mask = !((1u32 << (32 - prefix_len.min(32))) - 1);
+    (u32::from(addr) & mask) == (u32::from(network) & mask)
+}
+
+fn addr_in_prefix_v6(addr: Ipv6Addr, network: Ipv6Addr, prefix_len: u8) -> bool {
+    if prefix_len == 0 {
+        return true;
+    }
+    let bits = prefix_len.min(128) as usize;
+    let a = u128::from(addr);
+    let n = u128::from(network);
+    let mask = if bits == 128 {
+        u128::MAX
+    } else {
+        !((1u128 << (128 - bits)) - 1)
+    };
+    (a & mask) == (n & mask)
+}
+
 // ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
 pub(crate) fn prefix_len_to_mask_v4(len: u8) -> Ipv4Addr {
@@ -111,108 +141,159 @@ fn parse_addr_prefix(s: &str) -> Option<(IpAddr, u8)> {
     Some((ip, prefix_len))
 }
 
-// ── TCP NAT 表（参照 sing-tun TCPNat，增加端口耗尽时的 LRU 驱逐）────────────
+// ── TCP NAT 表（参照 sing-tun stack_system_nat.go）────────────────────────────
+//
+// 关键优化（对比旧实现）：
+// 1. **锁分离**：addr_map 和 port_map 各有独立 RwLock。
+//    旧实现用单个 RwLock<TcpNat> 包裹两表，lookup_back 取写锁，
+//    每条 TCP accept 都串行化。现在 lookup_back 只取 port_map 的**读锁**，
+//    允许并发反查。
+// 2. **per-entry last_active**：每条会话的 last_active 用独立 Mutex 保护，
+//    更新时间戳只需锁单个 entry，不阻塞其他会话的查找/插入。
+// 3. **throttled update**：sing-tun 仅当距上次更新 >1s 时才刷新 last_active，
+//    避免高频小流量连接在每包都争抢 entry 锁。此处采用同样策略。
 
 struct TcpNatEntry {
     source: SocketAddr,
     destination: SocketAddr,
-    last_active: Instant,
+    /// std::sync::Mutex（非 tokio）—— 持锁期间无 .await，仅读写 Instant
+    last_active: std::sync::Mutex<Instant>,
 }
 
 struct TcpNat {
-    port_index: u16,
+    /// 端口分配游标，用 Mutex 保护（分配时不持有 map 的锁）
+    port_index: std::sync::Mutex<u16>,
     /// (src_addr, src_port) → nat_port
-    addr_map: HashMap<SocketAddr, u16>,
-    /// nat_port → session
-    port_map: HashMap<u16, TcpNatEntry>,
+    addr_map: tokio::sync::RwLock<HashMap<SocketAddr, u16>>,
+    /// nat_port → session（Arc 便于在读锁释放后仍持有 entry 引用）
+    port_map: tokio::sync::RwLock<HashMap<u16, Arc<TcpNatEntry>>>,
 }
 
 impl TcpNat {
     fn new() -> Self {
         Self {
-            port_index: NAT_PORT_START,
-            addr_map: HashMap::new(),
-            port_map: HashMap::new(),
+            port_index: std::sync::Mutex::new(NAT_PORT_START),
+            addr_map: tokio::sync::RwLock::new(HashMap::new()),
+            port_map: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
 
     /// 为 (src, dst) 分配 NAT 端口。
-    /// - 已有映射直接返回（更新 last_active）。
+    /// - 已有映射直接返回（throttled 更新 last_active）。
     /// - 无可用端口时：驱逐 last_active 最旧的条目后复用其端口。
-    fn lookup_or_insert(&mut self, src: SocketAddr, dst: SocketAddr) -> u16 {
-        // 已有映射 → 更新活跃时间后返回
-        if let Some(&port) = self.addr_map.get(&src) {
-            if let Some(entry) = self.port_map.get_mut(&port) {
-                entry.last_active = Instant::now();
+    async fn lookup_or_insert(&self, src: SocketAddr, dst: SocketAddr) -> u16 {
+        // 快速路径：读锁查 addr_map
+        if let Some(&port) = self.addr_map.read().await.get(&src) {
+            // throttled 更新 last_active（仅当 >1s 未更新）
+            if let Some(entry) = self.port_map.read().await.get(&port) {
+                let now = Instant::now();
+                if let Ok(mut la) = entry.last_active.lock() {
+                    if now.duration_since(*la) > Duration::from_secs(1) {
+                        *la = now;
+                    }
+                }
             }
             return port;
         }
 
-        // 循环分配空闲端口
-        let start = self.port_index;
-        loop {
-            let port = self.port_index;
-            self.port_index = if self.port_index >= NAT_PORT_END {
+        // 慢速路径：分配新端口
+        // 1. 在 port_index Mutex 下取下一个候选端口
+        let port = {
+            let mut idx = self.port_index.lock().unwrap();
+            let p = *idx;
+            *idx = if *idx >= NAT_PORT_END {
                 NAT_PORT_START
             } else {
-                self.port_index + 1
+                *idx + 1
             };
-            if !self.port_map.contains_key(&port) {
-                self.do_insert(port, src, dst);
-                return port;
-            }
-            if self.port_index == start {
-                break; // 端口池耗尽
-            }
-        }
+            p
+        };
 
-        // 端口耗尽：驱逐最旧的条目（参照 sing-tun 策略）
-        let evict_port = self
-            .port_map
-            .iter()
-            .min_by_key(|(_, e)| e.last_active)
-            .map(|(&p, _)| p)
-            .unwrap_or(NAT_PORT_START);
-
-        if let Some(old) = self.port_map.remove(&evict_port) {
-            self.addr_map.remove(&old.source);
+        // 2. 写锁两表插入
+        {
+            let mut port_map = self.port_map.write().await;
+            // 端口已被占用（循环碰撞）→ 驱逐最旧条目
+            if port_map.contains_key(&port) {
+                let evict_port = port_map
+                    .iter()
+                    .min_by_key(|(_, e)| {
+                        e.last_active
+                            .lock()
+                            .map(|t| *t)
+                            .unwrap_or_else(|_| Instant::now())
+                    })
+                    .map(|(&p, _)| p)
+                    .unwrap_or(port);
+                if let Some(old) = port_map.remove(&evict_port) {
+                    drop(port_map);
+                    self.addr_map.write().await.remove(&old.source);
+                    // 重新获取写锁插入
+                    self.port_map.write().await.insert(
+                        evict_port,
+                        Arc::new(TcpNatEntry {
+                            source: src,
+                            destination: dst,
+                            last_active: std::sync::Mutex::new(Instant::now()),
+                        }),
+                    );
+                    self.addr_map.write().await.insert(src, evict_port);
+                    return evict_port;
+                }
+            }
+            port_map.insert(
+                port,
+                Arc::new(TcpNatEntry {
+                    source: src,
+                    destination: dst,
+                    last_active: std::sync::Mutex::new(Instant::now()),
+                }),
+            );
         }
-        self.do_insert(evict_port, src, dst);
-        evict_port
+        self.addr_map.write().await.insert(src, port);
+        port
     }
 
-    fn do_insert(&mut self, port: u16, src: SocketAddr, dst: SocketAddr) {
-        self.addr_map.insert(src, port);
-        self.port_map.insert(
-            port,
-            TcpNatEntry {
-                source: src,
-                destination: dst,
-                last_active: Instant::now(),
-            },
-        );
-    }
-
-    /// 根据 NAT 端口反查原始 (src, dst)，同时更新 last_active。
-    fn lookup_back(&mut self, nat_port: u16) -> Option<(SocketAddr, SocketAddr)> {
-        let entry = self.port_map.get_mut(&nat_port)?;
-        entry.last_active = Instant::now();
+    /// 根据 NAT 端口反查原始 (src, dst)，同时 throttled 更新 last_active。
+    /// 只取 port_map 读锁，允许并发反查。
+    async fn lookup_back(&self, nat_port: u16) -> Option<(SocketAddr, SocketAddr)> {
+        let entry = {
+            let port_map = self.port_map.read().await;
+            port_map.get(&nat_port).cloned()?
+        };
+        // throttled 更新：仅当距上次更新 >1s 时刷新
+        let now = Instant::now();
+        if let Ok(mut la) = entry.last_active.lock() {
+            if now.duration_since(*la) > Duration::from_secs(1) {
+                *la = now;
+            }
+        }
         Some((entry.source, entry.destination))
     }
 
     /// GC：删除超时会话。
-    fn gc(&mut self, timeout: Duration) {
+    async fn gc(&self, timeout: Duration) {
         let now = Instant::now();
-        let expired: Vec<u16> = self
-            .port_map
-            .iter()
-            .filter(|(_, e)| now.duration_since(e.last_active) > timeout)
-            .map(|(&p, _)| p)
-            .collect();
-        for port in expired {
-            if let Some(entry) = self.port_map.remove(&port) {
-                self.addr_map.remove(&entry.source);
-            }
+        let expired: Vec<(u16, SocketAddr)> = {
+            let port_map = self.port_map.read().await;
+            port_map
+                .iter()
+                .filter(|(_, e)| {
+                    e.last_active
+                        .lock()
+                        .map(|t| now.duration_since(*t) > timeout)
+                        .unwrap_or(false)
+                })
+                .map(|(&p, e)| (p, e.source))
+                .collect()
+        };
+        if expired.is_empty() {
+            return;
+        }
+        let mut port_map = self.port_map.write().await;
+        let mut addr_map = self.addr_map.write().await;
+        for (port, src) in expired {
+            port_map.remove(&port);
+            addr_map.remove(&src);
         }
     }
 }
@@ -266,19 +347,27 @@ impl TunInbound {
         let mut inet4_next: Option<Ipv4Addr> = None;
         let mut inet6_addr: Option<Ipv6Addr> = None;
         let mut inet6_next: Option<Ipv6Addr> = None;
+        // 收集所有前缀，用于 acceptLoop 目标重写（参照 sing-tun inet4Prefixes）
+        let mut inet4_prefixes: Vec<(Ipv4Addr, u8)> = Vec::new();
+        let mut inet6_prefixes: Vec<(Ipv6Addr, u8)> = Vec::new();
 
         for addr_str in &cfg.address {
             match parse_addr_prefix(addr_str) {
-                Some((IpAddr::V4(ip), _)) if inet4_addr.is_none() => {
-                    inet4_addr = Some(ip);
-                    inet4_next = Some(Ipv4Addr::from(u32::from(ip).wrapping_add(1)));
+                Some((IpAddr::V4(ip), pl)) => {
+                    if inet4_addr.is_none() {
+                        inet4_addr = Some(ip);
+                        inet4_next = Some(Ipv4Addr::from(u32::from(ip).wrapping_add(1)));
+                    }
+                    inet4_prefixes.push((ip, pl));
                 }
-                Some((IpAddr::V6(ip), _)) if inet6_addr.is_none() => {
-                    inet6_addr = Some(ip);
-                    inet6_next = Some(Ipv6Addr::from(u128::from(ip).wrapping_add(1)));
+                Some((IpAddr::V6(ip), pl)) => {
+                    if inet6_addr.is_none() {
+                        inet6_addr = Some(ip);
+                        inet6_next = Some(Ipv6Addr::from(u128::from(ip).wrapping_add(1)));
+                    }
+                    inet6_prefixes.push((ip, pl));
                 }
                 None => warn!(addr = %addr_str, "tun: invalid address prefix"),
-                _ => {}
             }
         }
 
@@ -451,23 +540,36 @@ impl TunInbound {
             .unwrap_or(0);
 
         // ── TCP NAT 表 ───────────────────────────────────────────────────────
-        let tcp_nat = Arc::new(RwLock::new(TcpNat::new()));
+        let tcp_nat = Arc::new(TcpNat::new());
 
         // ── TCP accept loop ──────────────────────────────────────────────────
+        // 传入 TUN 前缀，用于 acceptLoop 目标重写（参照 sing-tun acceptLoop L332-346）
         if let Some(listener) = tcp_listener_v4.clone() {
             let nat = tcp_nat.clone();
             let tx = self.tcp_tx.clone();
             let tag2 = tag.clone();
+            let prefixes = Arc::new(
+                inet4_prefixes
+                    .iter()
+                    .map(|(ip, pl)| (IpAddr::V4(*ip), *pl))
+                    .collect::<Vec<_>>(),
+            );
             tokio::spawn(async move {
-                accept_loop(listener, nat, tx, tag2).await;
+                accept_loop(listener, nat, tx, tag2, prefixes, false).await;
             });
         }
         if let Some(listener) = tcp_listener_v6.clone() {
             let nat = tcp_nat.clone();
             let tx = self.tcp_tx.clone();
             let tag2 = tag.clone();
+            let prefixes = Arc::new(
+                inet6_prefixes
+                    .iter()
+                    .map(|(ip, pl)| (IpAddr::V6(*ip), *pl))
+                    .collect::<Vec<_>>(),
+            );
             tokio::spawn(async move {
-                accept_loop(listener, nat, tx, tag2).await;
+                accept_loop(listener, nat, tx, tag2, prefixes, true).await;
             });
         }
 
@@ -488,7 +590,7 @@ impl TunInbound {
                 let mut ticker = tokio::time::interval(timeout / 2);
                 loop {
                     ticker.tick().await;
-                    nat.write().await.gc(timeout);
+                    nat.gc(timeout).await;
                     sessions
                         .lock()
                         .await
@@ -569,11 +671,17 @@ impl TunInbound {
 
 // ── TCP accept loop ───────────────────────────────────────────────────────────
 
+/// TCP accept 循环。
+/// `prefixes` 为 TUN 地址前缀列表，`is_v6` 标记地址族。
+/// 参照 sing-tun acceptLoop：若原始目标落在 TUN 前缀内，
+/// 改写为 127.0.0.1 / ::1，使应用能通过 TUN 地址访问本地回环服务。
 async fn accept_loop(
     listener: Arc<TcpListener>,
-    tcp_nat: Arc<RwLock<TcpNat>>,
+    tcp_nat: Arc<TcpNat>,
     tcp_tx: mpsc::Sender<InboundTcpStream>,
     tag: Arc<String>,
+    prefixes: Arc<Vec<(IpAddr, u8)>>,
+    is_v6: bool,
 ) {
     loop {
         let (stream, peer) = match listener.accept().await {
@@ -585,12 +693,36 @@ async fn accept_loop(
             }
         };
         let nat_port = peer.port();
-        let result = {
-            let mut nat = tcp_nat.write().await;
-            nat.lookup_back(nat_port)
-        };
+        let result = tcp_nat.lookup_back(nat_port).await;
         match result {
-            Some((_src, dst)) => {
+            Some((_src, mut dst)) => {
+                // 目标重写：若 dst IP 落在 TUN 子网内，改写为 loopback。
+                // 这样应用连接 TUN 地址（如 198.18.0.1:53）时，
+                // 代理会连接 127.0.0.1:53 而非 TUN 地址本身。
+                let need_rewrite = if is_v6 {
+                    if let SocketAddr::V6(a) = dst {
+                        prefixes.iter().any(|(net, pl)| match net {
+                            IpAddr::V6(n) => addr_in_prefix_v6(*a.ip(), *n, *pl),
+                            _ => false,
+                        })
+                    } else {
+                        false
+                    }
+                } else if let SocketAddr::V4(a) = dst {
+                    prefixes.iter().any(|(net, pl)| match net {
+                        IpAddr::V4(n) => addr_in_prefix_v4(*a.ip(), *n, *pl),
+                        _ => false,
+                    })
+                } else {
+                    false
+                };
+                if need_rewrite {
+                    dst = if is_v6 {
+                        SocketAddr::V6(SocketAddrV6::new(INET6_LOOPBACK, dst.port(), 0, 0))
+                    } else {
+                        SocketAddr::V4(SocketAddrV4::new(INET4_LOOPBACK, dst.port()))
+                    };
+                }
                 let inbound = InboundTcpStream {
                     stream: SniffedStream::new(stream),
                     target: Target::Socket(dst),
@@ -628,7 +760,7 @@ async fn process_ipv4(
     tag: &Arc<String>,
     udp_tx: &mpsc::Sender<InboundUdpPacket>,
     writer: Arc<Mutex<impl AsyncWriteExt + Unpin + Send + 'static>>,
-    tcp_nat: Arc<RwLock<TcpNat>>,
+    tcp_nat: Arc<TcpNat>,
     udp_sessions: Arc<Mutex<HashMap<(SocketAddr, SocketAddr), UdpEntry>>>,
     udp_timeout: Duration,
 ) {
@@ -695,7 +827,7 @@ async fn process_ipv6(
     tag: &Arc<String>,
     udp_tx: &mpsc::Sender<InboundUdpPacket>,
     writer: Arc<Mutex<impl AsyncWriteExt + Unpin + Send + 'static>>,
-    tcp_nat: Arc<RwLock<TcpNat>>,
+    tcp_nat: Arc<TcpNat>,
     udp_sessions: Arc<Mutex<HashMap<(SocketAddr, SocketAddr), UdpEntry>>>,
     udp_timeout: Duration,
 ) {
@@ -747,7 +879,7 @@ async fn handle_tcp_v4(
     inet4_next: Option<Ipv4Addr>,
     tcp_port: u16,
     writer: Arc<Mutex<impl AsyncWriteExt + Unpin + Send + 'static>>,
-    tcp_nat: Arc<RwLock<TcpNat>>,
+    tcp_nat: Arc<TcpNat>,
 ) {
     let (inet4_addr, inet4_next) = match (inet4_addr, inet4_next) {
         (Some(a), Some(n)) => (a, n),
@@ -763,7 +895,7 @@ async fn handle_tcp_v4(
     // 来自 Listener 的回包（参照 sing-tun：src == inet4Address && srcPort == tcpPort）
     if src_ip == inet4_addr && src_port == tcp_port {
         let nat_dst_port = dst_port;
-        let result = { tcp_nat.write().await.lookup_back(nat_dst_port) };
+        let result = tcp_nat.lookup_back(nat_dst_port).await;
         if let Some((orig_src, orig_dst)) = result {
             let mut pkt = raw.to_vec();
             let (new_src_ip, new_src_port) = match orig_dst {
@@ -793,7 +925,7 @@ async fn handle_tcp_v4(
     let src = SocketAddr::V4(SocketAddrV4::new(src_ip, src_port));
     let dst = SocketAddr::V4(SocketAddrV4::new(dst_ip, dst_port));
 
-    let nat_port = { tcp_nat.write().await.lookup_or_insert(src, dst) };
+    let nat_port = tcp_nat.lookup_or_insert(src, dst).await;
 
     let mut pkt = raw.to_vec();
     pkt[12..16].copy_from_slice(&inet4_next.octets());
@@ -817,7 +949,7 @@ async fn handle_tcp_v6(
     inet6_next: Option<Ipv6Addr>,
     tcp_port: u16,
     writer: Arc<Mutex<impl AsyncWriteExt + Unpin + Send + 'static>>,
-    tcp_nat: Arc<RwLock<TcpNat>>,
+    tcp_nat: Arc<TcpNat>,
 ) {
     let (inet6_addr, inet6_next) = match (inet6_addr, inet6_next) {
         (Some(a), Some(n)) => (a, n),
@@ -831,7 +963,7 @@ async fn handle_tcp_v6(
 
     // 来自 Listener 的回包
     if src_ip == inet6_addr && src_port == tcp_port {
-        let result = { tcp_nat.write().await.lookup_back(dst_port) };
+        let result = tcp_nat.lookup_back(dst_port).await;
         if let Some((orig_src, orig_dst)) = result {
             let mut pkt = raw.to_vec();
             let (new_src_ip, new_src_port) = match orig_dst {
@@ -858,7 +990,7 @@ async fn handle_tcp_v6(
 
     let src = SocketAddr::V6(SocketAddrV6::new(src_ip, src_port, 0, 0));
     let dst = SocketAddr::V6(SocketAddrV6::new(dst_ip, dst_port, 0, 0));
-    let nat_port = { tcp_nat.write().await.lookup_or_insert(src, dst) };
+    let nat_port = tcp_nat.lookup_or_insert(src, dst).await;
 
     let mut pkt = raw.to_vec();
     pkt[8..24].copy_from_slice(&inet6_next.octets());
@@ -2334,50 +2466,95 @@ mod tests {
         assert_ne!(internet_checksum(&hdr), 0);
     }
 
-    #[test]
-    fn test_tcp_nat_alloc_and_lookup() {
-        let mut nat = TcpNat::new();
+    #[tokio::test]
+    async fn test_tcp_nat_alloc_and_lookup() {
+        let nat = TcpNat::new();
         let src: SocketAddr = "1.2.3.4:5678".parse().unwrap();
         let dst: SocketAddr = "8.8.8.8:80".parse().unwrap();
-        let port = nat.lookup_or_insert(src, dst);
+        let port = nat.lookup_or_insert(src, dst).await;
         assert!(port >= NAT_PORT_START && port <= NAT_PORT_END);
         // 同一 src 应得到同一 port
-        assert_eq!(nat.lookup_or_insert(src, dst), port);
-        let (got_src, got_dst) = nat.lookup_back(port).unwrap();
+        assert_eq!(nat.lookup_or_insert(src, dst).await, port);
+        let (got_src, got_dst) = nat.lookup_back(port).await.unwrap();
         assert_eq!(got_src, src);
         assert_eq!(got_dst, dst);
     }
 
-    #[test]
-    fn test_tcp_nat_gc() {
-        let mut nat = TcpNat::new();
+    #[tokio::test]
+    async fn test_tcp_nat_gc() {
+        let nat = TcpNat::new();
         let src: SocketAddr = "1.2.3.4:9999".parse().unwrap();
         let dst: SocketAddr = "9.9.9.9:443".parse().unwrap();
-        nat.lookup_or_insert(src, dst);
-        nat.gc(Duration::from_secs(0));
-        assert!(nat.port_map.is_empty());
-        assert!(nat.addr_map.is_empty());
+        nat.lookup_or_insert(src, dst).await;
+        nat.gc(Duration::from_secs(0)).await;
+        assert!(nat.port_map.read().await.is_empty());
+        assert!(nat.addr_map.read().await.is_empty());
     }
 
-    #[test]
-    fn test_tcp_nat_eviction_correctness() {
-        let mut nat = TcpNat::new();
+    #[tokio::test]
+    async fn test_tcp_nat_eviction_correctness() {
+        let nat = TcpNat::new();
         // 填满端口池
         for i in 0..(NAT_PORT_END - NAT_PORT_START + 1) {
             let src: SocketAddr = format!("10.0.{}.{}:1000", i / 256, i % 256)
                 .parse()
                 .unwrap();
             let dst: SocketAddr = "8.8.8.8:80".parse().unwrap();
-            nat.lookup_or_insert(src, dst);
+            nat.lookup_or_insert(src, dst).await;
         }
         // 再分配一个新的，应触发 LRU 驱逐而不是覆盖随机条目
         let new_src: SocketAddr = "192.168.99.1:9999".parse().unwrap();
         let new_dst: SocketAddr = "1.1.1.1:443".parse().unwrap();
-        let port = nat.lookup_or_insert(new_src, new_dst);
+        let port = nat.lookup_or_insert(new_src, new_dst).await;
         // 分配的端口应在合法范围内
         assert!(port >= NAT_PORT_START && port <= NAT_PORT_END);
         // 新条目应可以反查
-        assert!(nat.lookup_back(port).is_some());
+        assert!(nat.lookup_back(port).await.is_some());
+    }
+
+    #[test]
+    fn test_addr_in_prefix_v4() {
+        assert!(addr_in_prefix_v4(
+            "198.18.0.5".parse().unwrap(),
+            "198.18.0.0".parse().unwrap(),
+            16
+        ));
+        assert!(!addr_in_prefix_v4(
+            "10.0.0.1".parse().unwrap(),
+            "198.18.0.0".parse().unwrap(),
+            16
+        ));
+        assert!(addr_in_prefix_v4(
+            "10.0.0.1".parse().unwrap(),
+            "0.0.0.0".parse().unwrap(),
+            0
+        ));
+    }
+
+    #[test]
+    fn test_addr_in_prefix_v6() {
+        // /120: fd00::0 — fd00::FF (256 地址)
+        assert!(addr_in_prefix_v6(
+            "fd00::5".parse().unwrap(),
+            "fd00::".parse().unwrap(),
+            120
+        ));
+        assert!(!addr_in_prefix_v6(
+            "fd01::1".parse().unwrap(),
+            "fd00::".parse().unwrap(),
+            120
+        ));
+        // /126: 仅 4 地址 (0-3)
+        assert!(addr_in_prefix_v6(
+            "fd00::3".parse().unwrap(),
+            "fd00::".parse().unwrap(),
+            126
+        ));
+        assert!(!addr_in_prefix_v6(
+            "fd00::4".parse().unwrap(),
+            "fd00::".parse().unwrap(),
+            126
+        ));
     }
 
     #[test]
