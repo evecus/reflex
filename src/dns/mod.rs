@@ -776,7 +776,7 @@ pub fn extract_qname(msg: &[u8]) -> Option<String> {
             if pos + 1 >= msg.len() {
                 return None;
             }
-            let offset = (((len & 0x3F) as usize) << 8) | (msg[pos + 1] as usize);
+            let offset = ((len & 0x3F) << 8) | (msg[pos + 1] as usize);
             // 名字不会从 header 内开始
             if offset < 12 {
                 return None;
