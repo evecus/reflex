@@ -429,9 +429,9 @@ pin_project! {
         #[pin]
         inner: S,
         pending_header: Option<Bytes>,
-        /// 部分写出后剩余的合并缓冲（header 残余 + 用户数据），需在下次 poll_write 优先冲刷
+        // 部分写出后剩余的合并缓冲（header 残余 + 用户数据），需在下次 poll_write 优先冲刷
         pending_write: Option<Bytes>,
-        /// pending_write 全部冲刷后应回报给调用方的字节数（即触发部分写的原始 data.len()）
+        // pending_write 全部冲刷后应回报给调用方的字节数（即触发部分写的原始 data.len()）
         pending_reported: usize,
     }
 }
