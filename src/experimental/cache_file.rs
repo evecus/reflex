@@ -33,6 +33,9 @@ const DNS_TABLE: TableDefinition<&[u8], (u64, &[u8])> = TableDefinition::new("dn
 const SELECTED_TABLE: TableDefinition<&str, &str> = TableDefinition::new("selected");
 /// key = ruleset tag，value = 原始规则集字节（type=remote 且无 path 时使用）
 const RULESET_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("ruleset_cache");
+/// 元数据表：key = 固定标识符（如 "fakeip_range"），value = 字符串。
+/// 与 SELECTED_TABLE 隔离，避免 selector group tag 与内部元数据键冲突。
+const META_TABLE: TableDefinition<&str, &str> = TableDefinition::new("meta");
 
 // ── 写操作消息 ────────────────────────────────────────────────────────────────
 
@@ -61,6 +64,11 @@ enum WriteOp {
     StoreRuleset {
         tag: String,
         data: Vec<u8>,
+    },
+    /// 写入元数据（如 fakeip_range 标记），与 SELECTED_TABLE 隔离
+    StoreMeta {
+        key: String,
+        value: String,
     },
     /// 参照 sing-box FakeIPReset()：fakeip range 发生变化时清空持久化表，
     /// 防止旧 range 的 IP 记录污染新 range 的分配。
@@ -109,10 +117,15 @@ impl CacheFile {
 
     /// 持久化远程规则集字节（非阻塞，type=remote 且无 path 时调用）
     pub fn store_ruleset_entry(&self, tag: &str, data: Vec<u8>) {
-        let _ = self.write_tx.send(WriteOp::StoreRuleset {
+        if let Err(_) = self.write_tx.send(WriteOp::StoreRuleset {
             tag: tag.to_string(),
             data,
-        });
+        }) {
+            tracing::warn!(
+                tag,
+                "cache_file: write channel closed, ruleset cache store failed (write task may have exited)"
+            );
+        }
     }
 
     /// 参照 sing-box FakeIPReset()：清空 fakeip 持久化表（非阻塞）。
@@ -125,13 +138,14 @@ impl CacheFile {
     }
 
     /// 持久化 fakeip range 标记，供下次启动时做 range 变化检测。
+    /// 使用 META_TABLE 而非 SELECTED_TABLE，避免与用户定义的 selector group tag 冲突。
     pub fn store_fakeip_range_tag(&self, tag: &str) {
         if !self.store_fakeip {
             return;
         }
-        let _ = self.write_tx.send(WriteOp::StoreSelected {
-            group: "__fakeip_range__".to_string(),
-            selected: tag.to_string(),
+        let _ = self.write_tx.send(WriteOp::StoreMeta {
+            key: "fakeip_range".to_string(),
+            value: tag.to_string(),
         });
     }
 
@@ -194,10 +208,17 @@ impl CacheFileReader {
         Some((raw, expire_at))
     }
 
-    /// 启动时恢复内存 fakeip 映射
+    /// 启动时恢复内存 fakeip 映射。
+    /// 若表不存在（如 ClearFakeip 删除后尚未重建），返回空列表而非报错。
     pub fn load_all_fakeip(&self) -> anyhow::Result<Vec<(IpAddr, String)>> {
         let rtx = self.db.begin_read()?;
-        let table = rtx.open_table(FAKEIP_TABLE)?;
+        // ClearFakeip 会 delete_table，此后读事务 open_table 会失败。
+        // 这是正常状态（表为空），返回空列表即可。
+        let table = match rtx.open_table(FAKEIP_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
         let mut result = Vec::new();
         for item in table.iter()? {
             let (k, v) = item?;
@@ -213,7 +234,16 @@ impl CacheFileReader {
 
     /// 读取上次持久化的 fakeip range 标记（inet4_range|inet6_range 拼接字符串）。
     /// 参照 sing-box Store.Start()：range 变化时需重置持久化数据。
+    /// 优先从 META_TABLE 读取；若不存在则回退到旧版 SELECTED_TABLE（向后兼容）。
     pub fn load_fakeip_range_tag(&self) -> Option<String> {
+        let rtx = self.db.begin_read().ok()?;
+        // 新版：META_TABLE
+        if let Ok(table) = rtx.open_table(META_TABLE) {
+            if let Ok(Some(guard)) = table.get("fakeip_range") {
+                return Some(guard.value().to_string());
+            }
+        }
+        // 旧版回退：SELECTED_TABLE 中的 "__fakeip_range__" 键
         let rtx = self.db.begin_read().ok()?;
         let table = rtx.open_table(SELECTED_TABLE).ok()?;
         let guard = table.get("__fakeip_range__").ok()??;
@@ -242,6 +272,7 @@ pub fn open_cache_file(
         wtx.open_table(DNS_TABLE)?;
         wtx.open_table(SELECTED_TABLE)?;
         wtx.open_table(RULESET_TABLE)?;
+        wtx.open_table(META_TABLE)?;
         wtx.commit()?;
     }
 
@@ -387,12 +418,23 @@ fn apply_op(db: &Database, op: WriteOp) -> anyhow::Result<()> {
             }
             wtx.commit()?;
         }
+        WriteOp::StoreMeta { key, value } => {
+            let wtx = db.begin_write()?;
+            {
+                wtx.open_table(META_TABLE)?
+                    .insert(key.as_str(), value.as_str())?;
+            }
+            wtx.commit()?;
+        }
         WriteOp::Cleanup | WriteOp::Shutdown => {}
         WriteOp::ClearFakeip => {
             let wtx = db.begin_write()?;
-            // delete_table 返回 Result<bool>（bool 表示表是否存在，不关心）。
-            // 用 .map(|_| ()) 丢弃 bool，再用 ? 传播 Error。
+            // delete_table 删除整个表结构。旧实现仅删除不重建，
+            // 导致后续读事务 open_table(FAKEIP_TABLE) 报 TableDoesNotExist，
+            // load_all_fakeip / purge_stale_fakeip 均会失败。
+            // 修复：删除后立即在同一写事务内重建空表。
             wtx.delete_table(FAKEIP_TABLE).map(|_| ())?;
+            wtx.open_table(FAKEIP_TABLE)?;
             wtx.commit()?;
         }
     }
