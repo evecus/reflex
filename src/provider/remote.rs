@@ -79,7 +79,15 @@ async fn fetch_and_update(
 ) -> anyhow::Result<()> {
     let bytes = download(&config.url, &config.user_agent).await?;
 
-    // 写缓存
+    // 先解析，成功后再写缓存。
+    // 旧实现先写缓存后解析：若远端返回了无法解析的内容（如 HTML 错误页、
+    // 订阅过期页面、部分截断数据），坏数据会覆盖掉原本可用的缓存文件，
+    // 导致下次启动时缓存加载也失败，节点全部丢失且无法自愈。
+    let nodes = super::parser::parse_auto(&bytes)?;
+    info!(provider = %config.tag, nodes = nodes.len(), "fetched from remote");
+    manager.update_nodes(&config.tag, nodes);
+
+    // 解析成功，安全写入缓存
     if let Some(path) = cache_path {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -88,10 +96,6 @@ async fn fetch_and_update(
             warn!(provider = %config.tag, err = %e, "failed to write cache");
         }
     }
-
-    let nodes = super::parser::parse_auto(&bytes)?;
-    info!(provider = %config.tag, nodes = nodes.len(), "fetched from remote");
-    manager.update_nodes(&config.tag, nodes);
     Ok(())
 }
 
