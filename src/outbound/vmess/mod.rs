@@ -8,7 +8,7 @@
 mod aead;
 mod frame;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

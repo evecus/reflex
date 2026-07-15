@@ -16,7 +16,7 @@
 //! ```
 
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::IpAddr,
     sync::Arc,
 };
 
@@ -593,7 +593,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for VlessTcpStream<S> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let this = self.project();
+        let mut this = self.project();
 
         // 先消费 read_buf（之前读出但未一次性给完的数据）
         if !this.read_buf.is_empty() {
@@ -630,7 +630,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for VlessTcpStream<S> {
                 // 数据不够，从 inner 读更多
                 let mut temp_storage = [0u8; 512];
                 let mut temp_buf = ReadBuf::new(&mut temp_storage);
-                match this.inner.poll_read(cx, &mut temp_buf) {
+                match this.inner.as_mut().poll_read(cx, &mut temp_buf) {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                     Poll::Ready(Ok(())) => {
@@ -645,7 +645,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for VlessTcpStream<S> {
         }
 
         // 响应头已跳过，直接读 inner
-        this.inner.poll_read(cx, buf)
+        this.inner.as_mut().poll_read(cx, buf)
     }
 }
 
