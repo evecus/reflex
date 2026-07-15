@@ -25,12 +25,13 @@ use std::{
 
 use dashmap::DashMap;
 
-// 64-bit atomics are unavailable on 32-bit targets (e.g. MIPS).
-// Use 32-bit variants there; traffic counters will wrap but that is
-// acceptable on embedded/router targets.
-#[cfg(not(target_pointer_width = "64"))]
+// 64-bit atomics: 大多数 32 位 Linux 平台（ARMv7、x86_32、MIPS）均支持
+// 64 位原子操作（target_has_atomic = "64"），只是非 lock-free。
+// 字节计数器必须 64 位，否则累计流量超 4 GB 即回绕。
+// 仅在无 64 位原子操作的嵌入式平台上回退为 32 位。
+#[cfg(not(target_has_atomic = "64"))]
 use std::sync::atomic::{AtomicI32 as AtomicI64, AtomicU32 as AtomicU64};
-#[cfg(target_pointer_width = "64")]
+#[cfg(target_has_atomic = "64")]
 use std::sync::atomic::{AtomicI64, AtomicU64};
 
 use serde_json::json;
@@ -609,38 +610,46 @@ impl ClashApi {
     fn get_configs(&self) -> HttpResponse {
         use crate::config::inbound::InboundConfig as IB;
         let mode = self.mode.get();
+        // mode: Arc<str>，json! 需要 &str（Arc<str> 未实现 Serialize，
+        // 但 &str 实现了），通过 &*mode 解引用。
+        let mode: &str = &mode;
 
         // 从 inbound 配置中提取各协议端口
+        // 旧实现 socks_port/http_port 声明为不可变且从未赋值，永远为 0；
+        // 且 match 提取的 port 被直接丢弃（let _ = port）。修正：
+        // Mixed 同时承载 SOCKS5 和 HTTP，故 socks_port/http_port 也应报告。
         let mut mixed_port: u16 = 0;
-        let socks_port: u16 = 0;
+        let mut socks_port: u16 = 0;
         let mut redir_port: u16 = 0;
         let mut tproxy_port: u16 = 0;
-        let http_port: u16 = 0;
+        let mut http_port: u16 = 0;
         let mut allow_lan = false;
 
         for ib in &self.inbound_configs {
-            let (listen, port) = match ib {
+            let listen = match ib {
                 IB::Mixed(c) => {
                     if mixed_port == 0 {
                         mixed_port = c.listen_port;
+                        // Mixed = SOCKS5 + HTTP CONNECT，同时报告
+                        socks_port = c.listen_port;
+                        http_port = c.listen_port;
                     }
-                    (&c.listen, c.listen_port)
+                    &c.listen
                 }
                 IB::Redir(c) => {
                     if redir_port == 0 {
                         redir_port = c.listen_port;
                     }
-                    (&c.listen, c.listen_port)
+                    &c.listen
                 }
                 IB::TProxy(c) => {
                     if tproxy_port == 0 {
                         tproxy_port = c.listen_port;
                     }
-                    (&c.listen, c.listen_port)
+                    &c.listen
                 }
                 IB::Dns(_) | IB::Tun(_) => continue,
             };
-            let _ = port;
             // 绑定 0.0.0.0 或 :: 意味着允许局域网
             if listen == "0.0.0.0" || listen == "::" || listen == "0" {
                 allow_lan = true;
@@ -2103,7 +2112,26 @@ fn extract_zip(data: &[u8], output_dir: &str) -> anyhow::Result<()> {
         } else {
             fname.clone()
         };
-        if rel.is_empty() || rel.contains("..") {
+
+        // Zip slip 防护（严格）：
+        // 旧实现仅 `rel.contains("..")`，存在两个问题：
+        // 1. 绝对路径（如 `/etc/passwd`）绕过检查 —— `Path::join` 遇到绝对路径
+        //    会替换 base，导致写到 output_dir 之外。
+        // 2. `contains("..")` 误伤合法文件名（如 `file..txt`）。
+        // 改用 std::path::Component 精确检查：拒绝绝对路径 + 拒绝 ParentDir 组件。
+        let rel_path = std::path::Path::new(&rel);
+        if rel_path.is_absolute() {
+            tracing::warn!(fname, "zip slip: skipping absolute path");
+            continue;
+        }
+        if rel_path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            tracing::warn!(fname, "zip slip: skipping path traversal");
+            continue;
+        }
+        if rel.is_empty() {
             continue;
         }
 
