@@ -65,6 +65,9 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update Cargo.lock [skip ci]"
           git push
 
+      - name: Run tests
+        run: cargo test --locked
+
       - name: Run clippy
         run: cargo clippy --locked -- -D warnings
 
@@ -143,8 +146,8 @@ jobs:
         run: |
           mkdir -p dist
           BIN_DIR="target/${{ matrix.target }}/release"
-
           cp "$BIN_DIR/reflex" "dist/reflex-linux-aarch64"
+
 
 
       - name: Create GitHub Release
