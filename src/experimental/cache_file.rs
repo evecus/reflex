@@ -117,10 +117,10 @@ impl CacheFile {
 
     /// 持久化远程规则集字节（非阻塞，type=remote 且无 path 时调用）
     pub fn store_ruleset_entry(&self, tag: &str, data: Vec<u8>) {
-        if let Err(_) = self.write_tx.send(WriteOp::StoreRuleset {
+        if self.write_tx.send(WriteOp::StoreRuleset {
             tag: tag.to_string(),
             data,
-        }) {
+        }).is_err() {
             tracing::warn!(
                 tag,
                 "cache_file: write channel closed, ruleset cache store failed (write task may have exited)"
