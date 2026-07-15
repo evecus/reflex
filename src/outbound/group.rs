@@ -871,7 +871,7 @@ async fn probe_via_outbound(
         .and_then(|code| code.parse().ok())
         .unwrap_or(0);
     anyhow::ensure!(
-        status_code >= 200 && status_code < 400,
+        (200..400).contains(&status_code),
         "probe: unhealthy status {status_code} from {url}"
     );
     Ok(())
