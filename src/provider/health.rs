@@ -102,9 +102,18 @@ async fn run_health_check(
 
     let results = futures_util::future::join_all(futs).await;
     for (tag, latency) in results {
-        if let Some(ms) = latency {
-            history.store(&tag, ms);
-            debug!(node = %tag, latency_ms = ms, "health_check: ok");
+        match latency {
+            Some(ms) => {
+                history.store(&tag, ms);
+                debug!(node = %tag, latency_ms = ms, "health_check: ok");
+            }
+            None => {
+                // 探测失败时删除历史记录，使该节点在 Clash API 中显示为无延迟
+                // （等同不可用）。旧实现仅跳过，导致曾经健康的节点即使已宕机
+                // 仍保留旧的低延迟值，永远不会被降级。
+                history.delete(&tag);
+                debug!(node = %tag, "health_check: failed, cleared stale delay");
+            }
         }
     }
 }
@@ -144,6 +153,29 @@ fn parse_probe_url(url: &str) -> anyhow::Result<(String, u16)> {
         anyhow::bail!("health_check url must start with http:// or https://");
     };
     let authority = rest.split('/').next().unwrap_or(rest);
+
+    // 正确处理 IPv6 地址（RFC 3986：[IPv6]:port）。
+    // 旧实现用 rsplit_once(':') 在无端口的 IPv6 上会错误地把地址内的冒号
+    // 当作 host:port 分隔符（如 "[::1]" 被切成 host=":" port="1]"），
+    // 且即使切对了也保留了方括号，传给 outbound.connect_tcp 会解析失败。
+    if let Some(stripped) = authority.strip_prefix('[') {
+        // IPv6 字面量
+        let close = stripped
+            .find(']')
+            .ok_or_else(|| anyhow::anyhow!("health_check url: unterminated IPv6 literal"))?;
+        let host = stripped[..close].to_string();
+        let after = &stripped[close + 1..];
+        let port = if let Some(p) = after.strip_prefix(':') {
+            p.parse::<u16>()
+                .map_err(|_| anyhow::anyhow!("health_check url: invalid IPv6 port"))?
+        } else {
+            default_port
+        };
+        anyhow::ensure!(!host.is_empty(), "health_check url missing host");
+        return Ok((host, port));
+    }
+
+    // 普通 host（域名或 IPv4）
     let (host, port) = if let Some((h, p)) = authority.rsplit_once(':') {
         (h.to_string(), p.parse()?)
     } else {
