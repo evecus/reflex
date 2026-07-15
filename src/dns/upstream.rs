@@ -584,43 +584,41 @@ fn build_doq_quic_config(
 
 // ── 协议实现：UDP ─────────────────────────────────────────────────────────────
 
-async fn udp_query(addr: SocketAddr, msg: Bytes, mark: u32) -> anyhow::Result<Bytes> {
-    let bind: SocketAddr = if addr.is_ipv6() {
-        "[::]:0"
-    } else {
-        "0.0.0.0:0"
-    }
-    .parse()?;
-    let sock = UdpSocket::bind(bind).await?;
-    #[cfg(target_os = "linux")]
-    crate::outbound::apply_mark_to_udp(&sock, mark)?;
-    sock.send_to(&msg, addr).await?;
-    let mut buf = vec![0u8; 4096];
-    let (n, _) = sock.recv_from(&mut buf).await?;
-    if n >= 3 && (buf[2] & 0x02) != 0 {
-        debug!(addr=%addr, "dns udp TC bit, retry over TCP");
-        return tcp_query(addr, msg, mark).await;
-    }
-    Ok(Bytes::copy_from_slice(&buf[..n]))
-}
-
 async fn udp_query_with_socket(
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
     msg: Bytes,
     mark: u32,
 ) -> anyhow::Result<Bytes> {
+    // DNS 报文前 2 字节为 transaction ID，用于匹配请求与响应。
+    // 共享 socket 时并发查询会收到彼此的响应，必须校验 ID 与来源地址，
+    // 否则会出现串包（把 A 查询的响应返回给 B 查询）。
+    // 旧实现仅校验 from != addr，未校验 transaction ID。
+    if msg.len() < 2 {
+        anyhow::bail!("dns udp query message too short");
+    }
+    let txn_id = u16::from_be_bytes([msg[0], msg[1]]);
     sock.send_to(&msg, addr).await?;
-    let mut buf = vec![0u8; 4096];
-    let (n, from) = sock.recv_from(&mut buf).await?;
-    if from != addr {
-        return udp_query(addr, msg, mark).await;
+    let mut buf = vec![0u8; 65535];
+    loop {
+        let (n, from) = sock.recv_from(&mut buf).await?;
+        if from != addr {
+            continue;
+        }
+        if n < 2 {
+            continue;
+        }
+        let resp_id = u16::from_be_bytes([buf[0], buf[1]]);
+        if resp_id != txn_id {
+            // 属于其他并发查询的响应，跳过继续等待
+            continue;
+        }
+        if n >= 3 && (buf[2] & 0x02) != 0 {
+            debug!(addr=%addr, "dns udp TC bit, retry over TCP");
+            return tcp_query(addr, msg, mark).await;
+        }
+        return Ok(Bytes::copy_from_slice(&buf[..n]));
     }
-    if n >= 3 && (buf[2] & 0x02) != 0 {
-        debug!(addr=%addr, "dns udp TC bit, retry over TCP");
-        return tcp_query(addr, msg, mark).await;
-    }
-    Ok(Bytes::copy_from_slice(&buf[..n]))
 }
 
 // ── 协议实现：TCP ─────────────────────────────────────────────────────────────
@@ -875,9 +873,10 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let body = msg.as_ref();
+    let authority = host_port_authority(host, port);
     let request = format!(
         "POST {path} HTTP/1.1\r\n\
-         Host: {host}:{port}\r\n\
+         Host: {authority}\r\n\
          Content-Type: application/dns-message\r\n\
          Accept: application/dns-message\r\n\
          Content-Length: {}\r\n\
@@ -917,7 +916,7 @@ where
         let _ = conn.await;
     });
 
-    let uri = format!("https://{}:{}{}", host, port, path)
+    let uri = format!("https://{}{}", host_port_authority(host, port), path)
         .parse::<http::Uri>()
         .map_err(|e| anyhow::anyhow!("invalid DoH URI: {e}"))?;
 
@@ -1049,7 +1048,26 @@ fn parse_doh_url(url: &str) -> anyhow::Result<(String, u16, String)> {
         (rest, "/".to_string())
     };
 
-    let (host, port) = if let Some(pos) = host_port.rfind(':') {
+    // 解析 host[:port]，正确处理 [IPv6] 与 [IPv6]:port 形式（RFC 3986）。
+    // 旧实现使用 host_port.rfind(':')，对裸 IPv6（如 https://[::1]/dns-query）
+    // 会把地址内部的 ':' 误当作端口分隔符，导致解析失败。
+    let (host, port) = if let Some(inner) = host_port.strip_prefix('[') {
+        let close = inner
+            .find(']')
+            .ok_or_else(|| anyhow::anyhow!("unmatched '[' in DoH URL: {url}"))?;
+        // 去掉方括号，保留裸 IPv6 地址（便于后续 parse::<IpAddr>() 与 SNI 使用）
+        let host = inner[..close].to_string();
+        let after = &inner[close + 1..];
+        let port = if after.is_empty() {
+            443u16
+        } else if let Some(p) = after.strip_prefix(':') {
+            p.parse()
+                .map_err(|_| anyhow::anyhow!("invalid DoH port in: {url}"))?
+        } else {
+            anyhow::bail!("unexpected trailing chars after ']' in DoH URL: {url}");
+        };
+        (host, port)
+    } else if let Some(pos) = host_port.rfind(':') {
         let port: u16 = host_port[pos + 1..]
             .parse()
             .map_err(|_| anyhow::anyhow!("invalid DoH port in: {url}"))?;
@@ -1059,6 +1077,16 @@ fn parse_doh_url(url: &str) -> anyhow::Result<(String, u16, String)> {
     };
 
     Ok((host, port, path))
+}
+
+/// 构造 `host:port` 形式的 authority 字符串。
+/// 若 host 是裸 IPv6 地址（含 ':' 但无方括号），自动加上方括号，符合 RFC 3986。
+fn host_port_authority(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 // ── FakeIP 地址池 ─────────────────────────────────────────────────────────────
