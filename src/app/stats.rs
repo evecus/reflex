@@ -2,8 +2,14 @@
 //!
 //! 每个 Outbound tag 维护独立计数，全局也有汇总。
 //!
-//! 在 32 位平台（如 mips32）上 `AtomicU64` 不存在，
-//! 通过条件编译退化为 `AtomicU32`；对外接口统一使用 `u64`。
+//! 优先使用 `AtomicU64`（绝大多数 32 位平台——x86、ARMv7+、MIPS32r2+——
+//! 都通过 `target_has_atomic = "64"` 提供原生 64 位原子操作）。
+//! 仅在极少数不支持 64 位原子的古早平台（如 MIPS32r1）退化为 `AtomicU32`。
+//!
+//! 关键点：`bytes_up` / `bytes_down` 是累计字节计数。旧实现用
+//! `target_pointer_width = "64"` 判断，导致所有 32 位平台都被降级为
+//! `AtomicU32`，累计流量超过 4 GB 后回绕归零。改用 `target_has_atomic`
+//! 后，实际 32 位平台也能用 `AtomicU64`，避免回绕。
 //!
 //! ## 优化：DashMap 替代 RwLock<HashMap>
 //! Stats::tag() 在每条连接建立/统计时都会被调用。原版用 RwLock<HashMap>，
@@ -17,12 +23,12 @@ use std::{
 
 use dashmap::DashMap;
 
-// ── 平台适配：32 位用 AtomicU32，64 位用 AtomicU64 ────────────────────────────
+// ── 平台适配：有 64 位原子用 AtomicU64，否则退化 AtomicU32 ───────────────────
 
-#[cfg(target_pointer_width = "64")]
+#[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64 as AtomicCounter;
 
-#[cfg(not(target_pointer_width = "64"))]
+#[cfg(not(target_has_atomic = "64"))]
 use std::sync::atomic::AtomicU32 as AtomicCounter;
 
 /// 将原子计数器的值读出并扩展为 u64
@@ -154,7 +160,8 @@ impl TcpGuard {
     }
 
     pub fn add_bytes(&self, up: u64, down: u64) {
-        // 32 位平台截断为 u32：单次传输不会超过 4 GB
+        // 绝大多数平台使用 AtomicU64，无截断；
+        // 仅无 64 位原子的古早平台退化为 u32（累计流量超过 4 GB 才回绕）。
         self.0.bytes_up.fetch_add(up as _, Ordering::Relaxed);
         self.0.bytes_down.fetch_add(down as _, Ordering::Relaxed);
     }
@@ -182,6 +189,12 @@ impl UdpGuard {
     pub fn add_bytes(&self, up: u64, down: u64) {
         self.0.bytes_up.fetch_add(up as _, Ordering::Relaxed);
         self.0.bytes_down.fetch_add(down as _, Ordering::Relaxed);
+    }
+
+    /// 记录一次 UDP 错误。与 `TcpGuard::record_error` 对称，
+    /// 旧实现缺失此方法导致 UDP 出错无法计入统计。
+    pub fn record_error(&self) {
+        self.0.errors.fetch_add(1, Ordering::Relaxed);
     }
 }
 
