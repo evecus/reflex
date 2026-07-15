@@ -755,45 +755,19 @@ pub fn extract_qname(msg: &[u8]) -> Option<String> {
     if msg.len() < 13 {
         return None;
     }
-    let mut pos = 12usize; // 跳过 12 字节 header
+    let mut pos = 12;
     let mut labels = Vec::new();
-    // 限制压缩指针跳转次数，防止恶意构造的循环指针导致死循环
-    let mut jumps = 0u16;
-    const MAX_JUMPS: u16 = 16;
     loop {
         if pos >= msg.len() {
             return None;
         }
         let len = msg[pos] as usize;
         if len == 0 {
-            // 根域名，名字结束
             break;
         }
         if len & 0xC0 == 0xC0 {
-            // 压缩指针（RFC 1035 §4.1.4）：高 2 位 = 11，低 14 位为消息内偏移。
-            // 旧实现遇到指针直接 break，导致 QNAME 被截断（响应报文中
-            // Question 段的 QNAME 常用压缩指针引用先前出现的名字）。
-            if pos + 1 >= msg.len() {
-                return None;
-            }
-            let offset = ((len & 0x3F) << 8) | (msg[pos + 1] as usize);
-            // 名字不会从 header 内开始
-            if offset < 12 {
-                return None;
-            }
-            // RFC 1035 要求指针指向 prior occurrence（向前指）；
-            // 向后指会形成环路导致死循环，直接拒绝。
-            if offset >= pos {
-                return None;
-            }
-            if jumps >= MAX_JUMPS {
-                return None;
-            }
-            jumps += 1;
-            pos = offset;
-            continue;
+            break;
         }
-        // 普通标签
         pos += 1;
         if pos + len > msg.len() {
             return None;
