@@ -213,17 +213,25 @@ impl hyper::rt::Read for MaybeHttps {
         cx: &mut Context<'_>,
         mut buf: hyper::rt::ReadBufCursor<'_>,
     ) -> Poll<io::Result<()>> {
-        let b = unsafe { &mut *(buf.as_mut() as *mut [std::mem::MaybeUninit<u8>] as *mut [u8]) };
-        let mut rb = ReadBuf::new(b);
-        match tokio::io::AsyncRead::poll_read(self, cx, &mut rb) {
-            Poll::Ready(Ok(())) => {
-                let n = rb.filled().len();
-                unsafe { buf.advance(n) };
-                Poll::Ready(Ok(()))
+        // hyper 的 ReadBufCursor 内部是 MaybeUninit<u8>，不能强转为 &[u8]：
+        // 未初始化字节被当作 u8 属于 UB（Rust 的初始化模型禁止）。
+        // 改用 tokio::io::ReadBuf::uninit 接受未初始化内存，安全桥接。
+        // 用块作用域让 rb 的可变借用（来自 buf.as_mut()）在 advance 前释放。
+        let n = {
+            // SAFETY: as_mut 返回未初始化的 spare 内存，我们只把它传给
+            // ReadBuf::uninit（不读取其内容），poll_read 填充后按实际填充
+            // 字节数 advance，不访问未初始化部分。
+            let spare = unsafe { buf.as_mut() };
+            let mut rb = ReadBuf::uninit(spare);
+            match tokio::io::AsyncRead::poll_read(self, cx, &mut rb) {
+                Poll::Ready(Ok(())) => rb.filled().len(),
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
             }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
-        }
+        };
+        // SAFETY: n 为 poll_read 实际写入 rb 的字节数，advance 不超过已初始化范围
+        unsafe { buf.advance(n) };
+        Poll::Ready(Ok(()))
     }
 }
 
