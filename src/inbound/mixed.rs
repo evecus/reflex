@@ -306,7 +306,7 @@ async fn handle_socks5_udp_associate(
     let (reply_tx, mut reply_rx) = mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(64);
 
     // 回包发送任务
-    {
+    let reply_task = {
         let sock = udp_sock.clone();
         tokio::spawn(async move {
             while let Some((data, dst, _spoofed_src)) = reply_rx.recv().await {
@@ -316,8 +316,8 @@ async fn handle_socks5_udp_associate(
                     warn!(err = %e, "socks5 udp reply error");
                 }
             }
-        });
-    }
+        })
+    };
 
     // UDP 接收任务
     let sock2 = udp_sock.clone();
@@ -365,11 +365,28 @@ async fn handle_socks5_udp_associate(
         }
     });
 
-    // 等待控制连接断开（客户端断开 = UDP 会话结束）
+    // 等待控制连接断开（客户端断开 = UDP 会话结束）。
+    // 旧实现仅做 ctrl.read()，存在两个问题：
+    // 1. 未启用 TCP keepalive：网络分区时 read 永久阻塞，UDP 会话泄漏。
+    // 2. reply_task 未被 abort：即使控制连接断开，reply_task 仍持有 udp_sock
+    //    的 Arc 引用，导致 socket 无法及时释放。
+    // 修复：设置 keepalive 探测 + 断开后 abort reply_task。
+    let _ = ctrl.set_nodelay(true);
+    // SockRef::from 返回 SockRef 直接值（非 Result），因为 tokio::net::TcpStream
+    // 实现了 AsFd trait。
+    {
+        let sock_ref = socket2::SockRef::from(&ctrl);
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(std::time::Duration::from_secs(60))
+            .with_interval(std::time::Duration::from_secs(15));
+        let _ = sock_ref.set_tcp_keepalive(&keepalive);
+    }
+
     let mut dummy = [0u8; 1];
     let _ = ctrl.read(&mut dummy).await;
 
     udp_task.abort();
+    reply_task.abort();
     debug!(peer = %peer, "socks5 UDP ASSOCIATE ended");
     Ok(())
 }
@@ -448,18 +465,50 @@ async fn handle_http(
     tcp_tx: mpsc::Sender<InboundTcpStream>,
     tag: Arc<String>,
 ) -> anyhow::Result<()> {
-    // 读取请求行和头部（以 \r\n\r\n 结尾）
-    let mut buf = BytesMut::with_capacity(4096);
+    // 读取请求行和头部（以 \r\n\r\n 结尾）。
+    // 旧实现逐字节 read_u8 且仅限制总长度 8192，存在 DoS 隐患：
+    // 1. 每字节一次 syscall + async wake，恶意慢速客户端可消耗大量 CPU。
+    // 2. 无单行长度限制，单行可占满整个 8192 预算。
+    // 修复：用 BufReader 批量读取 + 单行 8KB 上限 + 总头部 64KB 上限。
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    const MAX_HEADER_TOTAL: usize = 65536;
+    const MAX_LINE_LEN: usize = 8192;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut header_data = Vec::with_capacity(4096);
+
     loop {
-        let b = stream.read_u8().await?;
-        buf.put_u8(b);
-        if buf.ends_with(b"\r\n\r\n") {
+        let mut line = Vec::new();
+        let n = reader
+            .read_until(b'\n', &mut line)
+            .await?;
+        if n == 0 {
+            anyhow::bail!("HTTP client closed before sending complete headers");
+        }
+
+        anyhow::ensure!(
+            line.len() <= MAX_LINE_LEN,
+            "HTTP header line too long (>{MAX_LINE_LEN})"
+        );
+
+        header_data.extend_from_slice(&line);
+        anyhow::ensure!(
+            header_data.len() <= MAX_HEADER_TOTAL,
+            "HTTP headers too large (>{MAX_HEADER_TOTAL})"
+        );
+
+        // 检测 \r\n\r\n 终止（即空行）
+        if header_data.ends_with(b"\r\n\r\n") {
             break;
         }
-        anyhow::ensure!(buf.len() < 8192, "HTTP header too large");
+        // 也兼容仅 \n 的终止（最后一行可能为 "\n"）
+        if line == b"\n" || line == b"\r\n" {
+            break;
+        }
     }
 
-    let request = std::str::from_utf8(&buf)?;
+    let request = std::str::from_utf8(&header_data)?;
     let target = parse_http_connect(request)?;
 
     debug!(peer = %peer, target = %target, "http CONNECT");
