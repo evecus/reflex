@@ -248,11 +248,13 @@ impl Outbound for TuicOutbound {
         let conn = self.get_conn().await?;
         let session_id = self.udp_session.fetch_add(1, Ordering::Relaxed);
 
+        // 同一 UDP 会话的所有上行包必须使用相同的 session_id（服务端据此关联
+        // 上下行）。packet_id 在会话内单调递增，便于服务端去重/排序。
         let dgram = build_udp_datagram(
             &self.uuid,
             &self.token,
             session_id,
-            0, // packet_id
+            0, // packet_id（首包）
             0, // frag_id
             1, // frag_count
             &packet.target,
@@ -268,14 +270,15 @@ impl Outbound for TuicOutbound {
             let uuid = self.uuid;
             let token = self.token;
             let target = packet.target.clone();
-            // 用独立计数器给后续包分配 session_id，起点接着当前值
-            let next_sid = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(
-                self.udp_session.load(Ordering::Relaxed),
-            ));
+            // 旧实现误把 session_id 当成每个包递增的计数器，导致每个数据包都被
+            // 服务端视为新会话——上行下行无法关联，UDP 实质不可用。
+            // 修正：复用 session_id，packet_id 单调递增。
             tokio::spawn(async move {
+                let mut pkt_id: u16 = 1;
                 while let Some(data) = upstream_rx.recv().await {
-                    let sid = next_sid.fetch_add(1, Ordering::Relaxed);
-                    let dgram = build_udp_datagram(&uuid, &token, sid, 0, 0, 1, &target, &data);
+                    let dgram =
+                        build_udp_datagram(&uuid, &token, session_id, pkt_id, 0, 1, &target, &data);
+                    pkt_id = pkt_id.wrapping_add(1);
                     if conn_send.send_datagram(dgram).is_err() {
                         break;
                     }
@@ -316,6 +319,12 @@ impl Outbound for TuicOutbound {
 
 // ── 协议帧构建 ────────────────────────────────────────────────────────────────
 
+/// 编码 TUIC/SOCKS5 地址（ATYP + ADDR + PORT）。
+///
+/// 三个分支顺序必须一致：[ATYP][ADDR][PORT BE u16]。
+/// 旧实现的 Socket 分支把 port 写在 ATYP 之前（[PORT][ATYP][IP]），
+/// 与 Domain 分支和 sing-tuic 服务端解析不匹配，导致 TCP/UDP Connect 帧
+/// 在服务端被误解析（IP 被当 port，后续包体错位）。
 fn write_target(buf: &mut BytesMut, target: &Target) {
     use std::net::IpAddr;
     match target {
@@ -326,7 +335,6 @@ fn write_target(buf: &mut BytesMut, target: &Target) {
             buf.put_u16(*port);
         }
         Target::Socket(addr) => {
-            buf.put_u16(addr.port());
             match addr.ip() {
                 IpAddr::V4(ip) => {
                     buf.put_u8(ATYP_IPV4);
@@ -337,6 +345,7 @@ fn write_target(buf: &mut BytesMut, target: &Target) {
                     buf.put_slice(&ip.octets());
                 }
             }
+            buf.put_u16(addr.port());
         }
     }
 }
@@ -399,15 +408,20 @@ fn parse_uuid(s: &str) -> anyhow::Result<[u8; 16]> {
     Ok(out)
 }
 
-/// TUIC token = HMAC-SHA256(key=password, msg=uuid_bytes) 截取前 32B
-/// 实际上 sing-quic 用的是 blake3，但依赖较重；这里用 HMAC-SHA256 替代。
-/// 与服务端需保持一致（若服务端用 blake3，需替换此函数）。
+/// TUIC v5 token 派生：与 sing-tuic / sing-quic 服务端保持一致。
+///
+/// 算法：`blake3(password || uuid)`，输出 32 字节。
+///
+/// 旧实现误用 HMAC-SHA256(key=password, msg=uuid)，与服务端 blake3 不匹配，
+/// 任何 TUIC 服务端都会拒绝认证（客户端 token 与服务端重新计算的 token 不一致）。
+/// blake3 已经是 `outbound-net` feature 的非可选依赖，无额外开销。
 fn derive_token(uuid: &[u8; 16], password: &[u8]) -> [u8; 32] {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    let mut mac = Hmac::<Sha256>::new_from_slice(password).expect("hmac");
-    mac.update(uuid);
-    mac.finalize().into_bytes().into()
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(password);
+    hasher.update(uuid);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hasher.finalize().as_bytes());
+    out
 }
 
 // ── QUIC 配置 ─────────────────────────────────────────────────────────────────
