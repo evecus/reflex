@@ -29,7 +29,6 @@ use std::{
     collections::HashMap,
     future::Future,
     io,
-    net::SocketAddr,
     pin::Pin,
     sync::{
         atomic::{AtomicI64, Ordering},

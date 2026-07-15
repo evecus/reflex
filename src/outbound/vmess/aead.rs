@@ -96,12 +96,19 @@ fn next_mask_u16(reader: &mut dyn XofReader) -> u16 {
 
 // ── Nonce ────────────────────────────────────────────────────────────────────
 
+/// VMess 数据层 nonce：前 2 字节为大端 counter，后 10 字节取自 base[2..12]。
+/// counter 在 nonce 中只占 2 字节，因此有效取值范围是 0..=65535；超出后 nonce
+/// 必然复用 → GCM 安全性被破坏。我们在编码/解码侧显式拒绝计数器 wrap，强制
+/// 上层断开重连（对齐 sing-vmess 行为）。
 fn make_nonce(count: u16, base: &[u8; 16]) -> [u8; 12] {
     let mut n = [0u8; 12];
     n[..2].copy_from_slice(&count.to_be_bytes());
     n[2..].copy_from_slice(&base[2..12]);
     n
 }
+
+/// 计数器溢出错误：当 u16 计数器即将 wrap 时返回，避免 nonce 复用。
+const NONCE_OVERFLOW_ERR: &str = "vmess: chunk counter overflow (would reuse nonce)";
 
 // ── 派生响应侧 key / nonce ───────────────────────────────────────────────────
 
@@ -165,6 +172,10 @@ impl VmessEncoder {
             return Ok(out.freeze());
         }
         let nonce = make_nonce(self.count, &self.base_nonce);
+        // 计数器溢出保护：wrap 到已用 nonce 会导致 GCM 安全性破坏，必须报错。
+        if self.count == u16::MAX {
+            return Err(io::Error::new(io::ErrorKind::Other, NONCE_OVERFLOW_ERR));
+        }
         self.count += 1;
         let ct = self
             .cipher
@@ -257,6 +268,13 @@ impl VmessDecoder {
                         chunk.freeze()
                     } else {
                         let nonce = make_nonce(self.count, &self.base_nonce);
+                        // 计数器溢出保护：与 encoder 对称，wrap 时拒绝继续解密。
+                        if self.count == u16::MAX {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                NONCE_OVERFLOW_ERR,
+                            ));
+                        }
                         self.count += 1;
                         let pt = self
                             .cipher

@@ -594,8 +594,8 @@ impl Outbound for Hy2Outbound {
         let session_id = self.udp_session_id.fetch_add(1, Ordering::Relaxed);
         let addr = target_to_addr_str(&packet.target);
 
-        // 发送第一个包
-        send_udp_fragmented(&qconn, session_id, &addr, &packet.data)?;
+        // 发送第一个包（首包独立 session，packet_id=0 即可）
+        send_udp_fragmented(&qconn, session_id, 0, &addr, &packet.data)?;
         debug!(tag = %self.config.tag, target = %packet.target, session_id, "hy2 udp datagram sent");
 
         // 若有后续上行包，spawn task 持续发送
@@ -604,11 +604,15 @@ impl Outbound for Hy2Outbound {
             let addr_clone = addr.clone();
             let session_id_up = self.udp_session_id.fetch_add(1, Ordering::Relaxed);
             tokio::spawn(async move {
+                // 单调递增 packet_id，保证同 session 内分片重组不会错配
+                let mut pkt_id: u16 = 0;
                 while let Some(data) = upstream_rx.recv().await {
-                    if send_udp_fragmented(&qconn_send, session_id_up, &addr_clone, &data).is_err()
+                    if send_udp_fragmented(&qconn_send, session_id_up, pkt_id, &addr_clone, &data)
+                        .is_err()
                     {
                         break;
                     }
+                    pkt_id = pkt_id.wrapping_add(1);
                 }
             });
         }
@@ -1197,6 +1201,7 @@ fn build_udp_header(
 fn send_udp_fragmented(
     conn: &quinn::Connection,
     session_id: u32,
+    packet_id: u16,
     addr: &str,
     data: &[u8],
 ) -> anyhow::Result<()> {
@@ -1210,14 +1215,8 @@ fn send_udp_fragmented(
 
     let chunks: Vec<&[u8]> = data.chunks(chunk_size).collect();
     let frag_count = chunks.len() as u8;
-    // packet_id 用时间低 16 位做标识，足以区分同一 session 的不同包
-    let packet_id = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_micros() as u16
-    };
+    // packet_id 由调用方传入（单调递增计数器），保证同一 session 内不同包可区分，
+    // 用于分片重组。旧实现用 subsec_micros() 在快速连发时极易碰撞，导致重组错乱。
 
     for (frag_id, chunk) in chunks.into_iter().enumerate() {
         let mut hdr = build_udp_header(session_id, packet_id, frag_id as u8, frag_count, addr);
