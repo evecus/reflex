@@ -42,7 +42,6 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce,
 };
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use tokio::{net::UdpSocket, sync::Mutex, time};
 use tracing::{info, warn};
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
@@ -86,16 +85,19 @@ fn decode_key_base64(s: &str) -> anyhow::Result<[u8; 32]> {
     Ok(arr)
 }
 
-// ── BLAKE2s-256（用 SHA-256 近似，实际 WG 使用 BLAKE2s） ─────────────────────
+// ── BLAKE2s-256（WireGuard Noise_IKpsk2 规范强制要求） ──────────────────────
 //
-// 注意：WireGuard 规范使用 BLAKE2s，但 BLAKE2s 不在项目依赖中。
-// 我们用 BLAKE3（已有）或 SHA-256（已有）作为临时替换。
-// 生产部署应添加 blake2 crate。此处使用 SHA-256 以保证可编译性，
-// 并在注释中标注 TODO。
+// WireGuard 协议规范（Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s）的 hash 函数和
+// MAC 都必须使用 BLAKE2s，不能用 SHA-256 替代——否则与真实 WG 服务端握手时
+// 所有派生密钥都不一致，握手包必然被服务端丢弃。
+//
+// 旧实现为图省事用 SHA-256 近似，导致 WG 出站实质上完全不可用。
+// 现已加入 blake2 依赖，按规范正确实现。
 
-// TODO: 替换为 blake2::Blake2s256
 fn hash(data: &[u8]) -> [u8; 32] {
-    let mut h = Sha256::new();
+    use blake2::Digest;
+    // BLAKE2s-256：personalization 为空，输出 32 字节
+    let mut h = blake2::Blake2s256::new();
     h.update(data);
     let r = h.finalize();
     let mut out = [0u8; 32];
@@ -105,9 +107,8 @@ fn hash(data: &[u8]) -> [u8; 32] {
 
 fn hmac_hash(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
     use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    type HmacSha256 = Hmac<Sha256>;
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC key size error");
+    type HmacBlake2s = Hmac<blake2::Blake2s256>;
+    let mut mac = <HmacBlake2s as Mac>::new_from_slice(key).expect("HMAC key size error");
     mac.update(data);
     let r = mac.finalize().into_bytes();
     let mut out = [0u8; 32];
