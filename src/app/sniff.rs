@@ -377,13 +377,19 @@ fn try_quic(buf: &[u8]) -> Option<SniffResult> {
     if pos >= buf.len() {
         return None;
     }
-    let encrypted_payload = &buf[pos..pos.saturating_add(pkt_len as usize).min(buf.len())];
+    // 注意：`pos` 现在指向 packet number 的起始位置（紧跟 Length 字段）。
+    // QUIC Initial 包结构：[Header 第一字节][ver(4)][DCIL][DCID][SCIL][SCID][Token][Length][PN(1-4)][ciphertext+tag]
+    // 旧实现把 `&buf[pos..]` 当作"加密负载"传给解密函数，但里面把 `payload[0]`
+    // 误当成 QUIC 包头第一字节来恢复 pn_len，导致 pn_len 是随机值、AAD 构造错误、
+    // 整个解密必然失败。这里改为传入完整 buf + pn_offset，让解密函数自己重建 AAD。
+    let pn_offset = pos;
+    let encrypted_payload = &buf[pn_offset..pos.saturating_add(pkt_len as usize).min(buf.len())];
     if encrypted_payload.is_empty() {
         return None;
     }
 
     // 派生 Initial secrets 并解密
-    let plaintext = decrypt_quic_initial(dcid, initial_salt, encrypted_payload, is_v2)?;
+    let plaintext = decrypt_quic_initial(dcid, initial_salt, buf, pn_offset, encrypted_payload.len())?;
 
     // 从解密后的 QUIC CRYPTO frame 中提取 TLS ClientHello
     extract_sni_from_quic_crypto(&plaintext)
@@ -448,11 +454,21 @@ fn read_varint(buf: &[u8], pos: usize) -> Option<(u64, usize)> {
 
 /// 使用 HKDF + AES-128-GCM 解密 QUIC Initial 包负载。
 /// 参照 RFC 9001 §5.2 和 sing-box 实现。
+///
+/// 关键修正：
+/// - 旧实现把 `payload[0]` 当作 QUIC 包头第一字节来恢复 `pn_len`，但 `payload`
+///   实际从 packet number 字段开始，`payload[0]` 是已加密的 PN 第一字节 → pn_len
+///   是随机值、AAD 构造错误、解密必然失败。这里改为传入完整 `buf` 和 `pn_offset`
+///   （PN 在 buf 中的偏移），用 `buf[0]` 作为 QUIC 包头第一字节。
+/// - AAD = `buf[0..pn_offset+pn_len]`（QUIC 长包头第一字节 + 后续字段 + 已恢复的
+///   packet number 字节），对齐 RFC 9000 §17.2.2 的 AAD 构造。
+/// - GCM tag 验证补齐 `E(K, J0) XOR` 步骤（旧 gcm_tag 只返回 GHASH）。
 fn decrypt_quic_initial(
     dcid: &[u8],
     initial_salt: &[u8],
-    payload: &[u8],
-    _is_v2: bool,
+    buf: &[u8],
+    pn_offset: usize,
+    payload_len: usize,
 ) -> Option<Vec<u8>> {
     // HKDF-Extract(initial_salt, dcid) → initial_secret
     let initial_secret = hkdf_extract_sha256(initial_salt, dcid);
@@ -465,29 +481,33 @@ fn decrypt_quic_initial(
     let iv = hkdf_expand_label_sha256(&client_secret, b"quic iv", b"", 12)?;
     let hp = hkdf_expand_label_sha256(&client_secret, b"quic hp", b"", 16)?;
 
-    if payload.len() < 20 {
+    if payload_len < 20 {
         return None;
     }
 
-    // Header Protection: 用 hp 掩码还原 first byte 和 packet number
-    // sample = payload[4..20]
-    let sample = &payload[4..20];
+    // Header Protection: sample 取自 packet number 之后 16 字节
+    // (RFC 9001 §5.4.2: sample = pn_offset+4 .. pn_offset+20)
+    if pn_offset + 20 > buf.len() {
+        return None;
+    }
+    let sample = &buf[pn_offset + 4..pn_offset + 20];
     let mask = aes128_ecb_block(&hp, sample)?;
 
-    // 还原 first byte 的低4位（long header: mask bits 0-3）
-    let first_byte = payload[0] ^ (mask[0] & 0x0F);
+    // 还原 QUIC 包头第一字节的低 4 位（long header: mask 0-3 位作用于 first byte）
+    // 关键：用 buf[0]（真正的 QUIC 第一字节），不是 payload[0]（已加密 PN 字节）。
+    let first_byte = buf[0] ^ (mask[0] & 0x0F);
     let pn_len = ((first_byte & 0x03) + 1) as usize;
 
-    if payload.len() < pn_len {
+    if payload_len < pn_len + 16 {
         return None;
     }
 
-    // 还原 packet number 字节
+    // 还原 packet number 字节（位于 buf[pn_offset..pn_offset+pn_len]）
     let mut pn_bytes = [0u8; 4];
     for i in 0..pn_len {
-        pn_bytes[i] = payload[i] ^ mask[1 + i];
+        pn_bytes[i] = buf[pn_offset + i] ^ mask[1 + i];
     }
-    // packet_number（截断形式，仅用于 nonce，简化处理取前 pn_len 字节）
+    // packet_number（截断形式，仅用于 nonce）
     let pn = u32::from_be_bytes(pn_bytes);
 
     // 构造 AEAD nonce = iv XOR packet_number（右对齐）
@@ -497,22 +517,23 @@ fn decrypt_quic_initial(
         nonce[8 + i] ^= pn_be[i];
     }
 
-    // 密文 = payload[pn_len..len-16]，AEAD tag = payload[len-16..]
-    let ciphertext_start = pn_len;
-    if payload.len() < ciphertext_start + 16 {
+    // 密文 = buf[pn_offset+pn_len .. pn_offset+payload_len-16]
+    // AEAD tag = buf[pn_offset+payload_len-16 .. pn_offset+payload_len]
+    let ciphertext_start = pn_offset + pn_len;
+    let ciphertext_end = pn_offset + payload_len - 16;
+    if ciphertext_end < ciphertext_start || ciphertext_end + 16 > buf.len() {
         return None;
     }
-    let ciphertext = &payload[ciphertext_start..payload.len() - 16];
-    let tag = &payload[payload.len() - 16..];
+    let ciphertext = &buf[ciphertext_start..ciphertext_end];
+    let tag = &buf[ciphertext_end..ciphertext_end + 16];
 
-    // 构造 AAD = 原始头部（first byte 已恢复 + 后续到 pn 末尾）
-    let mut aad = Vec::with_capacity(pn_len + 1);
+    // 构造 AAD = 完整 QUIC 长包头 + 已恢复的 packet number 字节
+    // (RFC 9000 §17.2.2: AAD = Header + PN，PN 用解掩码后的明文字节)
+    // 布局：[unmasked first_byte][buf[1..pn_offset] = ver|DCIL|DCID|SCIL|SCID|Token|Len][unmasked PN]
+    let mut aad = Vec::with_capacity(pn_offset + pn_len);
     aad.push(first_byte);
-    // 从原始 payload 截取 packet number 位置之前的内容（本函数 payload 是从 pn 开始的）
-    // 注意：这里 payload 已是从 packet number 位置开始的数据
-    for i in 0..pn_len {
-        aad.push(payload[i] ^ mask[1 + i]);
-    }
+    aad.extend_from_slice(&buf[1..pn_offset]);
+    aad.extend_from_slice(&pn_bytes[..pn_len]);
 
     // AES-128-GCM 解密
     aes128_gcm_decrypt(&key, &nonce, &aad, ciphertext, tag)
@@ -694,14 +715,22 @@ fn aes128_gcm_decrypt(
     j0[..12].copy_from_slice(nonce);
     j0[15] = 0x01;
 
-    // 验证 GHASH tag
+    // 验证 GCM tag：tag = GHASH(H, AAD, C) XOR E(K, J0)
+    // 旧实现 gcm_tag 只返回 GHASH，缺失 E(K, J0) XOR，导致 computed_tag != tag
+    // 永远成立 → QUIC SNI 嗅探 100% 失败。这里补齐 E(K, J0) XOR。
     let h_block = {
         let mut b = [0u8; 16];
         aes128_encrypt_block(&mut b, &round_keys);
         b
     };
-    let computed_tag = gcm_tag(&h_block, aad, ciphertext, key, nonce, &round_keys);
-    if computed_tag != tag {
+    let ghash = gcm_ghash(&h_block, aad, ciphertext);
+    let mut e_j0 = j0;
+    aes128_encrypt_block(&mut e_j0, &round_keys);
+    let mut computed_tag = [0u8; 16];
+    for i in 0..16 {
+        computed_tag[i] = ghash[i] ^ e_j0[i];
+    }
+    if &computed_tag[..] != tag {
         return None; // tag 不匹配（加密数据或连接不是 QUIC Initial）
     }
 
@@ -728,15 +757,9 @@ fn gcm_inc32(block: &mut [u8; 16]) {
     block[12..].copy_from_slice(&n.to_be_bytes());
 }
 
-/// GCM GHASH + auth tag 计算
-fn gcm_tag(
-    h: &[u8; 16],
-    aad: &[u8],
-    ciphertext: &[u8],
-    _key: &[u8],
-    _nonce: &[u8],
-    _round_keys: &[[u8; 16]; 11],
-) -> [u8; 16] {
+/// GCM GHASH 计算（不含 E(K, J0) XOR，由调用方负责）。
+/// 输入：H = E(K, 0^128)，AAD，密文；输出 GHASH(H, AAD, C)。
+fn gcm_ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
     let mut y = [0u8; 16];
 
     // GHASH over AAD
@@ -758,10 +781,6 @@ fn gcm_tag(
     xor16(&mut y, &len_block);
     y = gf128_mul(&y, h);
 
-    // E(K, J0)
-    // 重建 J0：nonce 在外部不可访问，用 round_keys 重新加密全零块得 H，这里直接用传入的 round_keys
-    // 实际 tag = GHASH ^ E(K, J0)，J0 由调用方的 counter（初始值）决定
-    // 简化：tag 已在调用方构造时处理，这里返回 GHASH 值供外部 xor
     y
 }
 
