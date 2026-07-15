@@ -1081,6 +1081,7 @@ fn parse_doh_url(url: &str) -> anyhow::Result<(String, u16, String)> {
 
 /// 构造 `host:port` 形式的 authority 字符串。
 /// 若 host 是裸 IPv6 地址（含 ':' 但无方括号），自动加上方括号，符合 RFC 3986。
+#[cfg(feature = "outbound-net")]
 fn host_port_authority(host: &str, port: u16) -> String {
     if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]:{port}")
