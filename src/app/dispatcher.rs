@@ -13,7 +13,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
     dns::DnsResolver,
@@ -494,7 +494,15 @@ impl Dispatcher {
 
                     if let Some(handle) = session_table.get_live(&session_key) {
                         // 会话存活，直接投递数据
-                        let _ = handle.data_tx.try_send(packet.data);
+                        if let Err(mpsc::error::TrySendError::Full(_)) =
+                            handle.data_tx.try_send(packet.data)
+                        {
+                            warn!(
+                                src=%packet.src,
+                                dst=%packet.target,
+                                "udp: session channel full, packet dropped"
+                            );
+                        }
                         handle.last_seen = Instant::now();
                         debug!(src=%packet.src, dst=%packet.target, "udp: reuse session");
                     } else {
@@ -504,7 +512,15 @@ impl Dispatcher {
                         let (data_tx, data_rx) = mpsc::channel::<bytes::Bytes>(64);
 
                         // 先把第一个包发进去再启动 task
-                        let _ = data_tx.try_send(packet.data.clone());
+                        if let Err(mpsc::error::TrySendError::Full(_)) =
+                            data_tx.try_send(packet.data.clone())
+                        {
+                            warn!(
+                                src=%packet.src,
+                                dst=%packet.target,
+                                "udp: new session channel unexpectedly full, packet dropped"
+                            );
+                        }
 
                         let mgr = self.outbound_mgr.clone();
                         let stats = self.stats.clone();
