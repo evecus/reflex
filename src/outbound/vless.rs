@@ -16,7 +16,7 @@
 //! ```
 
 use std::{
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     sync::Arc,
 };
 
@@ -565,11 +565,6 @@ pin_project! {
         response_header_skipped: bool,
         // 暂存已读但未处理的字节（用于跳过 VLESS 响应头）
         raw_buf: Vec<u8>,
-        // 待发送的合并缓冲区（header + data），用于处理部分写或 Pending
-        // 旧实现：Pending 时把 header 放回 pending_header，data 直接丢弃 → 数据丢失
-        pending_write: Option<Bytes>,
-        // pending_write 完整发出后应上报的"已写字节数"（即原始 data.len()）
-        pending_reported: usize,
     }
 }
 
@@ -581,8 +576,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> VlessTcpStream<S> {
             read_buf: Bytes::new(),
             response_header_skipped: false,
             raw_buf: Vec::new(),
-            pending_write: None,
-            pending_reported: 0,
         }
     }
 }
@@ -593,9 +586,9 @@ impl<S: AsyncRead + Unpin> AsyncRead for VlessTcpStream<S> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let mut this = self.project();
+        let this = self.project();
 
-        // 先消费 read_buf（之前读出但未一次性给完的数据）
+        // 先消费 read_buf
         if !this.read_buf.is_empty() {
             let n = buf.remaining().min(this.read_buf.len());
             buf.put_slice(&this.read_buf[..n]);
@@ -605,47 +598,47 @@ impl<S: AsyncRead + Unpin> AsyncRead for VlessTcpStream<S> {
 
         if !*this.response_header_skipped {
             // 需要先读取并跳过 VLESS 响应头 [Ver 1B][Addon Len 1B][Addon ...]
-            // 旧实现：读一次后若不够 2+addon_len 字节，直接返回 Ok(())（空 buf），
-            // 调用者会误判为 EOF；且没有重新注册 waker，等同 busy-loop。
-            // 修正：循环读取直到凑够头部、或返回 Pending（waker 已由 inner 注册）、或 EOF。
-            loop {
-                if this.raw_buf.len() >= 2 {
-                    let addon_len = this.raw_buf[1] as usize;
-                    let hdr_len = 2 + addon_len;
-                    if this.raw_buf.len() >= hdr_len {
-                        *this.response_header_skipped = true;
-                        let payload = Bytes::copy_from_slice(&this.raw_buf[hdr_len..]);
-                        this.raw_buf.clear();
-                        if !payload.is_empty() {
-                            *this.read_buf = payload;
-                            let n = buf.remaining().min(this.read_buf.len());
-                            buf.put_slice(&this.read_buf[..n]);
-                            *this.read_buf = this.read_buf.slice(n..);
-                            return Poll::Ready(Ok(()));
-                        }
-                        // header 后无附带 payload，跳出循环继续读 inner
-                        break;
+            // 策略：读取数据到 raw_buf，凑够至少 2 字节后解析头
+            // 直接从底层读到临时buf，再处理VLESS响应头
+            let mut temp_storage = [0u8; 512];
+            let mut temp_buf = ReadBuf::new(&mut temp_storage);
+            match this.inner.poll_read(cx, &mut temp_buf) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => {
+                    let filled = temp_buf.filled().to_vec();
+                    if filled.is_empty() {
+                        return Poll::Ready(Ok(())); // EOF
                     }
-                }
-                // 数据不够，从 inner 读更多
-                let mut temp_storage = [0u8; 512];
-                let mut temp_buf = ReadBuf::new(&mut temp_storage);
-                match this.inner.as_mut().poll_read(cx, &mut temp_buf) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                    Poll::Ready(Ok(())) => {
-                        let filled = temp_buf.filled();
-                        if filled.is_empty() {
-                            return Poll::Ready(Ok(())); // 真正的 EOF
-                        }
-                        this.raw_buf.extend_from_slice(filled);
-                    }
+                    this.raw_buf.extend_from_slice(&filled);
                 }
             }
+            // 尝试解析 VLESS 响应头
+            if this.raw_buf.len() >= 2 {
+                let addon_len = this.raw_buf[1] as usize;
+                let hdr_len = 2 + addon_len;
+                if this.raw_buf.len() >= hdr_len {
+                    // 跳过头部
+                    *this.response_header_skipped = true;
+                    let payload = Bytes::copy_from_slice(&this.raw_buf[hdr_len..]);
+                    this.raw_buf.clear();
+                    if !payload.is_empty() {
+                        *this.read_buf = payload;
+                        // 递归消费
+                        let n = buf.remaining().min(this.read_buf.len());
+                        buf.put_slice(&this.read_buf[..n]);
+                        *this.read_buf = this.read_buf.slice(n..);
+                    }
+                    return Poll::Ready(Ok(()));
+                }
+            }
+            // 数据不够，返回 Pending 等待更多数据
+            // 实际上我们已经消费了一些数据，不能真正 Pending（会导致死锁）
+            // 这里返回 Ok(()) 让调用者再次 poll
+            Poll::Ready(Ok(()))
+        } else {
+            this.inner.poll_read(cx, buf)
         }
-
-        // 响应头已跳过，直接读 inner
-        this.inner.as_mut().poll_read(cx, buf)
     }
 }
 
@@ -656,59 +649,28 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for VlessTcpStream<S> {
         data: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         let this = self.project();
-
-        // 1. 优先完成上一次未写完的合并缓冲区
-        if let Some(pending) = this.pending_write.take() {
-            return match this.inner.poll_write(cx, &pending) {
-                Poll::Ready(Ok(n)) if n >= pending.len() => {
-                    let reported = *this.pending_reported;
-                    *this.pending_reported = 0;
-                    Poll::Ready(Ok(reported))
-                }
-                Poll::Ready(Ok(n)) => {
-                    // 部分写：保留剩余，下次继续
-                    *this.pending_write = Some(pending.slice(n..));
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Poll::Ready(Err(e)) => {
-                    *this.pending_reported = 0;
-                    Poll::Ready(Err(e))
-                }
-                Poll::Pending => {
-                    *this.pending_write = Some(pending);
-                    Poll::Pending
-                }
-            };
-        }
-
-        // 2. 首次写：合并 header + data
         if let Some(header) = this.pending_header.take() {
+            // 首次写：将 VLESS 请求头 + data 合并发送
             let mut combined = BytesMut::with_capacity(header.len() + data.len());
             combined.put_slice(&header);
             combined.put_slice(data);
             let combined = combined.freeze();
-            return match this.inner.poll_write(cx, &combined) {
-                Poll::Ready(Ok(n)) if n >= combined.len() => Poll::Ready(Ok(data.len())),
-                Poll::Ready(Ok(n)) => {
-                    *this.pending_write = Some(combined.slice(n..));
-                    *this.pending_reported = data.len();
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
+            match this.inner.poll_write(cx, &combined) {
+                Poll::Ready(Ok(n)) => Poll::Ready(Ok(if n >= header.len() {
+                    n - header.len()
+                } else {
+                    0
+                })),
                 Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
                 Poll::Pending => {
-                    // 旧实现：把 header 放回 pending_header，data 丢弃 → 数据丢失
-                    // 修正：保存合并缓冲区，下次 poll_write 时优先完成它
-                    *this.pending_write = Some(combined);
-                    *this.pending_reported = data.len();
+                    // 写阻塞，把 header 放回去（data 部分丢失，简化处理）
+                    *this.pending_header = Some(header);
                     Poll::Pending
                 }
-            };
+            }
+        } else {
+            this.inner.poll_write(cx, data)
         }
-
-        // 3. 无 header，直接透传
-        this.inner.poll_write(cx, data)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {

@@ -566,25 +566,19 @@ async fn recv_loop<R: AsyncRead + Unpin + Send + 'static>(
             }
             CMD_SYNACK => {
                 // v2：服务端确认 stream 打开
-                // data_len == 0：正常确认，stream 已可用，无需额外处理
-                // data_len >  0：服务端拒绝打开（携带错误信息），需关闭本地 stream
                 if data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     if reader.read_exact(&mut buf).await.is_err() {
                         session.close();
                         return;
                     }
-                    warn!(
-                        seq = session.seq,
-                        sid,
-                        msg = %String::from_utf8_lossy(&buf),
-                        "anytls server rejected stream (SYNACK with error)"
-                    );
-                    // 单次加锁移除 tx：tx 被 drop 后，AnyTlsStream::poll_read
-                    // 收到 channel 关闭信号即返回 EOF/Reset，无需再发 CMD_FIN
-                    // （服务端已知此 stream 失败，否则不会发错误 SYNACK）。
-                    // 旧实现 `drop(tx.clone())` 是空操作（只 drop 了克隆），
-                    // 且重复加锁存在 TOCTOU 窗口，这里一并修正。
+                    // 携带数据表示错误，关闭对应 stream
+                    let streams = session.streams.lock().await;
+                    if let Some(tx) = streams.get(&sid) {
+                        // 关闭发送端使 stream 读到 EOF
+                        drop(tx.clone());
+                    }
+                    drop(streams);
                     session.streams.lock().await.remove(&sid);
                 }
             }

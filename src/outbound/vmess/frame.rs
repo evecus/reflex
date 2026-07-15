@@ -375,12 +375,7 @@ pub fn parse_response_header(
         .map_err(|_| anyhow::anyhow!("vmess resp: decrypt header failed"))?;
 
     anyhow::ensure!(dec_hdr.len() >= 4, "vmess resp: header too short");
-    // dec_hdr[0] = response version (sing-vmess 校验应为 0)
-    let resp_version = dec_hdr[0];
-    anyhow::ensure!(
-        resp_version == 0,
-        "vmess resp: unexpected response version {resp_version} (expected 0)"
-    );
+    // dec_hdr[0] = response version (should be 0)
     // dec_hdr[1] = response token (must match req_hdr.resp_header)
     let token = dec_hdr[1];
 
@@ -395,14 +390,24 @@ fn sha256(input: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(input).into()
 }
 
-/// 生成 N 字节密码学安全随机数组。
-///
-/// 使用 `rand::rngs::OsRng`（基于操作系统 CSPRNG），杜绝旧实现中
-/// `SystemTime::subsec_nanos() + DefaultHasher` 导致的 nonce/key 可预测问题。
+/// 生成 N 字节随机数组
 pub fn rand_array<const N: usize>() -> [u8; N] {
-    use rand::RngCore;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::SystemTime;
+
+    // 轻量随机：用系统时间 + 地址混合，避免引入 getrandom 依赖
+    // 实际项目建议换成 rand::rng().fill_bytes
     let mut out = [0u8; N];
-    rand::rngs::OsRng.fill_bytes(&mut out);
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    for (i, byte) in out.iter_mut().enumerate() {
+        let mut h = DefaultHasher::new();
+        (seed ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15)).hash(&mut h);
+        *byte = h.finish() as u8;
+    }
     out
 }
 

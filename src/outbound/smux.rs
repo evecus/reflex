@@ -236,10 +236,7 @@ pub struct SmuxStream {
     #[allow(dead_code)]
     stream_id: u32,
     data_rx: Option<mpsc::Receiver<Bytes>>,
-    /// 向 session 写队列投递 (sid, data)，session loop 串行编码并写出。
-    /// 使用无界 channel 以避免 poll_write 在 channel 满时 busy-spin
-    /// （旧实现 try_send + wake_by_ref 在 channel 满时会立即重新调度，浪费 CPU）。
-    write_tx: mpsc::UnboundedSender<(u32, Bytes)>,
+    write_tx: mpsc::Sender<Bytes>,
     closed: Arc<Notify>,
     read_buf: BytesMut,
 }
@@ -277,17 +274,17 @@ impl AsyncRead for SmuxStream {
 impl AsyncWrite for SmuxStream {
     fn poll_write(
         self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        // 无界 channel：send 仅在 session 关闭时失败，永不阻塞，
-        // 彻底消除旧实现 try_send + wake_by_ref 的 busy-spin。
-        match self
-            .write_tx
-            .send((self.stream_id, Bytes::copy_from_slice(buf)))
-        {
+        match self.write_tx.try_send(Bytes::copy_from_slice(buf)) {
             Ok(()) => Poll::Ready(Ok(buf.len())),
-            Err(_) => Poll::Ready(Err(io::Error::new(
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                // Register waker and return Pending; the session loop will drain the channel
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "smux stream closed",
             ))),
@@ -309,6 +306,8 @@ impl AsyncWrite for SmuxStream {
 struct StreamState {
     /// 向流投递入站数据
     data_tx: mpsc::Sender<Bytes>,
+    /// 从流读取出站写入
+    write_rx: mpsc::Receiver<Bytes>,
 }
 
 async fn session_loop<T>(
@@ -326,11 +325,6 @@ where
     // 流表：stream_id → state
     let streams: Arc<Mutex<HashMap<u32, StreamState>>> = Arc::new(Mutex::new(HashMap::new()));
     let next_id = Arc::new(AtomicU32::new(1)); // 客户端使用奇数 stream_id
-
-    // ── 中央写队列 ────────────────────────────────────────────────────────────
-    // 所有 SmuxStream 的 poll_write 把 (sid, data) 投递到这里，session loop 通过
-    // recv().await 等待，彻底替代旧实现每 1ms 轮询 + 持锁 write_all 的反模式。
-    let (write_queue_tx, mut write_queue_rx) = mpsc::unbounded_channel::<(u32, Bytes)>();
 
     // ── 读循环 ────────────────────────────────────────────────────────────────
     let streams_r = streams.clone();
@@ -396,39 +390,47 @@ where
                     break;
                 }
 
-                // 建立入站数据通道
+                // 建立双向通道
                 let (data_tx, data_rx) = mpsc::channel::<Bytes>(64);
+                let (write_tx, write_rx) = mpsc::channel::<Bytes>(64);
                 let stream_closed = Arc::new(Notify::new());
 
                 let stream = SmuxStream {
                     stream_id: sid,
                     data_rx: Some(data_rx),
-                    // 共享中央写队列：send 永不阻塞（除非 session 关闭）
-                    write_tx: write_queue_tx.clone(),
+                    write_tx,
                     closed: stream_closed.clone(),
                     read_buf: BytesMut::new(),
                 };
 
-                streams_w.lock().await.insert(sid, StreamState { data_tx });
+                streams_w.lock().await.insert(sid, StreamState { data_tx, write_rx });
 
                 let _ = req.reply.send(Ok(stream));
                 debug!("smux: opened stream sid={sid}");
             }
 
-            // 出站数据：从中央写队列取一条编码写出。
-            // 不持有 streams 锁，避免阻塞读循环；sid 已内嵌在消息中。
-            Some((sid, data)) = write_queue_rx.recv() => {
-                let frame = Frame {
-                    version,
-                    cmd: CMD_PSH,
-                    stream_id: sid,
-                    data,
-                    consumed: 0,
-                };
-                if let Err(e) = writer.write_all(&frame.encode()).await {
-                    warn!("smux: PSH write error sid={sid}: {e}");
-                    streams_w.lock().await.remove(&sid);
-                    // 写失败后继续运行；其它流仍可使用。
+            // 出站数据刷写
+            _ = tokio::time::sleep(std::time::Duration::from_millis(1)) => {
+                let mut map = streams_w.lock().await;
+                let mut to_remove = vec![];
+                for (sid, state) in map.iter_mut() {
+                    while let Ok(data) = state.write_rx.try_recv() {
+                        let frame = Frame {
+                            version,
+                            cmd: CMD_PSH,
+                            stream_id: *sid,
+                            data,
+                            consumed: 0,
+                        };
+                        if let Err(e) = writer.write_all(&frame.encode()).await {
+                            warn!("smux: PSH write error sid={sid}: {e}");
+                            to_remove.push(*sid);
+                            break;
+                        }
+                    }
+                }
+                for sid in to_remove {
+                    map.remove(&sid);
                 }
             }
 

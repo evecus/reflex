@@ -429,10 +429,6 @@ pin_project! {
         #[pin]
         inner: S,
         pending_header: Option<Bytes>,
-        // 部分写出后剩余的合并缓冲（header 残余 + 用户数据），需在下次 poll_write 优先冲刷
-        pending_write: Option<Bytes>,
-        // pending_write 全部冲刷后应回报给调用方的字节数（即触发部分写的原始 data.len()）
-        pending_reported: usize,
     }
 }
 
@@ -441,8 +437,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> TrojanTcpStream<S> {
         Self {
             inner,
             pending_header: Some(header),
-            pending_write: None,
-            pending_reported: 0,
         }
     }
 }
@@ -465,55 +459,30 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for TrojanTcpStream<S> {
         data: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         let this = self.project();
-
-        // 1. 优先冲刷上次部分写出遗留的合并缓冲。
-        //    旧实现在 n < header.len() 时返回 Ok(0)（违反 AsyncWrite 契约：
-        //    Ok(0) 表示连接不可写）并丢弃未发送的 header 残余，导致后续裸数据
-        //    写出 → 协议损坏。这里改为保存剩余并返回 Pending，下次重试。
-        if let Some(pending) = this.pending_write.take() {
-            return match this.inner.poll_write(cx, &pending) {
-                Poll::Ready(Ok(n)) if n >= pending.len() => {
-                    let reported = *this.pending_reported;
-                    *this.pending_reported = 0;
-                    Poll::Ready(Ok(reported))
-                }
-                Poll::Ready(Ok(n)) => {
-                    *this.pending_write = Some(pending.slice(n..));
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                Poll::Pending => {
-                    *this.pending_write = Some(pending);
-                    Poll::Pending
-                }
-            };
-        }
-
-        // 2. 首次写入：握手头 + data 合并发送
         if let Some(header) = this.pending_header.take() {
+            // 首次写入：握手头 + data 合并发送
             let mut combined = BytesMut::with_capacity(header.len() + data.len());
             combined.put_slice(&header);
             combined.put_slice(data);
             let combined = combined.freeze();
-            return match this.inner.poll_write(cx, &combined) {
-                Poll::Ready(Ok(n)) if n >= combined.len() => Poll::Ready(Ok(data.len())),
+            match this.inner.poll_write(cx, &combined) {
                 Poll::Ready(Ok(n)) => {
-                    *this.pending_write = Some(combined.slice(n..));
-                    *this.pending_reported = data.len();
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
+                    // 报告写出的用户数据字节数（握手头不计入）
+                    Poll::Ready(Ok(if n >= header.len() {
+                        n - header.len()
+                    } else {
+                        0
+                    }))
                 }
                 Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
                 Poll::Pending => {
                     *this.pending_header = Some(header);
                     Poll::Pending
                 }
-            };
+            }
+        } else {
+            this.inner.poll_write(cx, data)
         }
-
-        // 3. 无 header，直接写
-        this.inner.poll_write(cx, data)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
