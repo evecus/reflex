@@ -2,7 +2,7 @@
   "version": 2,
   "rules": [
     {
-      "domain": "www.microsoft.com"
+      "domain_suffix": "kick.com"
     }
   ]
 }
