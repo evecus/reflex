@@ -1,0 +1,98 @@
+name: Build Dashboard
+
+# 面板源码位于 ui 分支（非默认分支），所有触发都监听 ui 分支，
+# 并在 checkout 时显式 ref: ui，确保编译的是 ui 分支的代码。
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要编译的分支/ref（默认 ui）'
+        required: false
+        default: 'ui'
+
+# 同分支并发时取消旧 run，节省 CI 资源
+concurrency:
+  group: dashboard-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # tag 推送时创建 release 需要
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      # 始终从 ui 分支拉代码（手动触发时可用 inputs.ref 覆盖）
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || 'ui' }}
+          # 拉取完整历史，便于生成 release notes
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Pack artifact
+        run: |
+          # 把 dist/ 打包成 zip，便于用户直接解压到 reflex external_ui 目录
+          cd dist
+          zip -r ../reflex-dashboard.zip .
+          cd ..
+          # 生成 sha256
+          sha256sum reflex-dashboard.zip > reflex-dashboard.zip.sha256
+          echo "=== Build output ==="
+          ls -lh dist/
+          echo "=== Artifact ==="
+          ls -lh reflex-dashboard.zip
+          cat reflex-dashboard.zip.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reflex-dashboard
+          path: |
+            reflex-dashboard.zip
+            reflex-dashboard.zip.sha256
+          retention-days: 14
+
+  # ── tag 推送时创建 GitHub Release ──────────────────────────────────────
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/dashboard-v')
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: reflex-dashboard
+          path: artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Reflex Dashboard ${{ github.ref_name }}"
+          generate_release_notes: true
+          files: |
+            artifacts/reflex-dashboard.zip
+            artifacts/reflex-dashboard.zip.sha256
