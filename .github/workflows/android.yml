@@ -1,7 +1,23 @@
 name: Build Android arm64 (musl static binary)
 
+# 目标：产出一个可在 Android arm64-v8a 设备上直接运行的静态链接二进制。
+# 做法：交叉编译到 aarch64-unknown-linux-musl（而不是 aarch64-linux-android），
+# 因为 musl 静态链接产物不依赖系统 libc 版本，可以绕开各厂商 bionic 版本差异，
+# 这是 Android 端 VPN/代理内核类二进制常见的发布方式（随 APK 打包，或由前端
+# App 释放到私有目录后 exec 调起）。
+
 on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "是否创建 GitHub Release 并上传产物"
+        type: boolean
+        default: false
 
 env:
   BIN_NAME: reflex
@@ -12,10 +28,8 @@ jobs:
     name: Build ${{ github.event.repository.name }} (${{ env.TARGET }})
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: test
-          fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -27,6 +41,10 @@ jobs:
         with:
           key: ${{ env.TARGET }}
 
+      # 用 cross 而非原生 cargo 直接指定 musl target：
+      # 项目 outbound-net feature 拉入 ring（含少量 asm/C 代码）、tun 等带 C
+      # 编译产物的 crate，本机手工配 musl-gcc 交叉工具链容易踩坑；cross 提供
+      # 预置好完整交叉工具链的容器，稳定性更好，也是 Rust 生态交叉编译的标准做法。
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross --locked
 
@@ -58,11 +76,21 @@ jobs:
           chmod +x dist/${{ env.BIN_NAME }}-android-arm64
           cd dist && sha256sum ${{ env.BIN_NAME }}-android-arm64 > ${{ env.BIN_NAME }}-android-arm64.sha256
 
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-android-arm64-musl
+          path: |
+            dist/${{ env.BIN_NAME }}-android-arm64
+            dist/${{ env.BIN_NAME }}-android-arm64.sha256
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: test
-          name: reflex test
           files: |
             dist/${{ env.BIN_NAME }}-android-arm64
+            dist/${{ env.BIN_NAME }}-android-arm64.sha256
           generate_release_notes: true
