@@ -277,3 +277,4 @@ jobs:
             artifacts/reflex-windows-x86_64/reflex-windows-x86_64.exe
             artifacts/reflex-macos-aarch64/reflex-macos-aarch64
             artifacts/reflex-android-arm64-v8a/reflex-android-arm64-v8a
+            source_code.zip
