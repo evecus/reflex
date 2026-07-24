@@ -95,6 +95,24 @@ jobs:
         if: matrix.target == 'aarch64-linux-android'
         run: cargo install cargo-ndk --locked
 
+      - name: Workaround NDK r23+ missing libgcc
+        if: matrix.target == 'aarch64-linux-android'
+        shell: bash
+        run: |
+          # NDK r23 起彻底移除了 libgcc.a，改用 libunwind/libclang_rt.builtins，
+          # 但部分 rustc 版本针对 Android target 的链接参数里仍会追加 -lgcc，
+          # 导致 ld.lld 报 "unable to find library -lgcc"（rust-lang/rust#85806）。
+          # 社区标准 workaround：找到 NDK 里每一个 libunwind.a 的实际所在目录，
+          # 在同目录放一个 libgcc.a 链接器脚本桩文件，内容 INPUT(-lunwind)，
+          # 把对 -lgcc 的引用转发给 libunwind。用 find 动态定位，不硬编码路径，
+          # 避免不同 NDK 版本目录结构变化导致路径失效。
+          NDK_HOME="${{ steps.setup-ndk.outputs.ndk-path }}"
+          find "${NDK_HOME}" -name "libunwind.a" -print | while read -r f; do
+            dir=$(dirname "$f")
+            echo "INPUT(-lunwind)" > "${dir}/libgcc.a"
+            echo "Patched: ${dir}/libgcc.a"
+          done
+
       - name: Inject version into Cargo.toml
         shell: bash
         run: |
@@ -271,13 +289,7 @@ jobs:
           cat checksums.txt
           cp config.example.json artifacts/config.json
 
-      - name: Create and push tag
-        run: |
-          VERSION="${{ github.event.inputs.version }}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$VERSION" -m "Release $VERSION"
-          git push origin "$VERSION"
+
 
       - name: Create GitHub Release
         id: create_release
