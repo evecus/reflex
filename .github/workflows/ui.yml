@@ -69,7 +69,7 @@ jobs:
         with:
           tag_name:   test
           name:       "reflex test"
-          generate_release_notes: true
+          prelease:   true
           files: |
             reflex-dashboard.zip
 
@@ -79,6 +79,6 @@ jobs:
         with:
           tag_name:   ${{ github.event.inputs.version }}
           name:       "reflex ${{ github.event.inputs.version }}"
-          generate_release_notes: true
+          prelease:   false
           files: |
             reflex-dashboard.zip
