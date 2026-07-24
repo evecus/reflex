@@ -1,4 +1,4 @@
-name: release 32 bit
+name: Release (32-bit)
 
 on:
   workflow_dispatch:
@@ -484,7 +484,6 @@ jobs:
             ${{ env.ARTIFACT }}.sha256
           retention-days: 1
 
-  # ── 4. 创建 GitHub Release ───────────────────────────────────────────────
   release:
     name: Create Release
     runs-on: ubuntu-latest
@@ -493,6 +492,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: stable
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -502,16 +504,11 @@ jobs:
       - name: List artifacts
         run: find artifacts/ -type f | sort
 
-      - name: Delete existing pre-releases and their tags
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package source code (stable branch)
         run: |
-          gh release list --limit 100 --json tagName,isPrerelease \
-            --jq '.[] | select(.isPrerelease) | .tagName' \
-            | while read -r tag; do
-                echo "Deleting pre-release and tag: $tag"
-                gh release delete "$tag" --yes --cleanup-tag || true
-              done
+          zip -r source_code.zip . -x '.git/*' -x 'artifacts/*'
+          sha256sum source_code.zip > source_code.zip.sha256
+          ls -lh source_code.zip
 
       - name: Create GitHub Release
         id: create_release
@@ -528,3 +525,4 @@ jobs:
             artifacts/reflex-android-armv7/reflex-android-armv7
             artifacts/reflex-linux-mipsle/reflex-linux-mipsle
             artifacts/reflex-linux-mips/reflex-linux-mips
+            source_code.zip
