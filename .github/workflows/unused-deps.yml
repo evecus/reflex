@@ -1,4 +1,4 @@
-name: Check unused dependencies
+name: z-Check unused dependencies
 
 on:
   workflow_dispatch:
