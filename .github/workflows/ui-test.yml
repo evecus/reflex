@@ -1,5 +1,6 @@
 name: ui test
 on:
+  workflow_dispatch:
 permissions:
   contents: write
 
