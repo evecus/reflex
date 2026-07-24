@@ -125,10 +125,7 @@ EXAMPLES:
 ## 配置
 
 配置格式与 sing-box 基本对齐，支持 JSON（含 `//` `#` 注释）与 YAML 两种写法，仓库内提供
-两份等价的完整示例：
-
-- [`config.example.json`](./config.example.json)
-- [`config.example.yaml`](./config.example.yaml)
+两份等价的完整示例
 
 顶层字段包括：
 
