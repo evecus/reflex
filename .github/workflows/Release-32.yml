@@ -526,7 +526,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name:   ${{ github.event.inputs.version }}
-          name:       "reflex ${{ github.event.inputs.version }} (32-bit)"
+          name:       "reflex ${{ github.event.inputs.version }}"
           prerelease: false
           draft:      false
           files: |
