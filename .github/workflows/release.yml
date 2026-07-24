@@ -95,13 +95,6 @@ jobs:
         if: matrix.target == 'aarch64-linux-android'
         shell: bash
         run: |
-          # NDK r23 起彻底移除了 libgcc.a，改用 libunwind/libclang_rt.builtins，
-          # 但部分 rustc 版本针对 Android target 的链接参数里仍会追加 -lgcc，
-          # 导致 ld.lld 报 "unable to find library -lgcc"（rust-lang/rust#85806）。
-          # 社区标准 workaround：找到 NDK 里每一个 libunwind.a 的实际所在目录，
-          # 在同目录放一个 libgcc.a 链接器脚本桩文件，内容 INPUT(-lunwind)，
-          # 把对 -lgcc 的引用转发给 libunwind。用 find 动态定位，不硬编码路径，
-          # 避免不同 NDK 版本目录结构变化导致路径失效。
           NDK_HOME="${{ steps.setup-ndk.outputs.ndk-path }}"
           find "${NDK_HOME}" -name "libunwind.a" -print | while read -r f; do
             dir=$(dirname "$f")
@@ -114,9 +107,6 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version }}"
           VERSION="${VERSION#v}"
-          # macOS 自带 BSD sed，-i 必须显式带备份后缀参数（即使是空字符串），
-          # 而 Linux/Windows(bash) 用的 GNU sed 则不需要，两者语法不兼容。
-          # 用 -i.bak + 删除备份文件的写法在两个 sed 实现下都能正确工作。
           sed -i.bak "s/^version = .*/version = \"${VERSION}\"/" Cargo.toml
           rm -f Cargo.toml.bak
 
@@ -176,7 +166,6 @@ jobs:
           cargo ndk \
             --target aarch64-linux-android \
             --platform 24 \
-            -o target-ndk-out \
             build \
             --release \
             --locked \
@@ -185,21 +174,9 @@ jobs:
 
       # ── 收集产物（Linux：直接二进制；Windows：.exe） ────────────────────
       - name: Collect binary (Linux)
-        if: runner.os == 'Linux' && matrix.target != 'aarch64-linux-android'
+        if: runner.os == 'Linux'
         run: |
           BIN="target/${{ matrix.target }}/release/reflex"
-          cp "$BIN" "${{ matrix.artifact }}"
-          sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
-          echo "=== Build output ==="
-          ls -lh "${{ matrix.artifact }}"
-          cat    "${{ matrix.artifact }}.sha256"
-
-      - name: Collect binary (Android)
-        if: matrix.target == 'aarch64-linux-android'
-        run: |
-          # cargo-ndk 用 -o target-ndk-out 时按 ABI 名分子目录输出，
-          # 与普通 cargo build --target 的 target/<triple>/release/ 路径不同
-          BIN="target-ndk-out/arm64-v8a/reflex"
           cp "$BIN" "${{ matrix.artifact }}"
           sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
           echo "=== Build output ==="
@@ -278,14 +255,16 @@ jobs:
       - name: List artifacts
         run: find artifacts/ -type f | sort
 
-      - name: Merge checksums
+      - name: Delete existing pre-releases and their tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cat artifacts/**/*.sha256 > checksums.txt
-          echo "=== checksums.txt ==="
-          cat checksums.txt
-          cp config.example.json artifacts/config.json
-
-
+          gh release list --limit 100 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease) | .tagName' \
+            | while read -r tag; do
+                echo "Deleting pre-release and tag: $tag"
+                gh release delete "$tag" --yes --cleanup-tag || true
+              done
 
       - name: Create GitHub Release
         id: create_release
@@ -301,4 +280,3 @@ jobs:
             artifacts/reflex-windows-x86_64/reflex-windows-x86_64.exe
             artifacts/reflex-macos-aarch64/reflex-macos-aarch64
             artifacts/reflex-android-arm64-v8a/reflex-android-arm64-v8a
-            artifacts/config.json
