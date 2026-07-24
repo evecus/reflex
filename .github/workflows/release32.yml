@@ -1,4 +1,4 @@
-name: Release (32-bit)
+name: release 32-bit
 
 on:
   workflow_dispatch:
