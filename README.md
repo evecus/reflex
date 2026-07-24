@@ -28,18 +28,18 @@
 
 ### 下载预编译二进制
 
-前往 [Releases](../../releases) 页面下载对应平台的产物（Linux 为裸二进制，Windows 为
-`.exe`），赋予可执行权限后运行即可：
+前往 [Releases](../../releases) 页面下载对应平台的产物（Linux/macOS 为裸二进制，Windows
+为 `.exe`），赋予可执行权限后运行即可：
 
 ```bash
-chmod +x reflex-linux-x86
-./reflex-linux-x86 -d /etc/reflex
+chmod +x reflex-linux-x86_64
+./reflex-linux-x86_64 -d /etc/reflex
 ```
 
 每个产物都附带 `.sha256` 校验文件，建议下载后校验完整性：
 
 ```bash
-sha256sum -c reflex-linux-x86.sha256
+sha256sum -c reflex-linux-x86_64.sha256
 ```
 
 ### 从源码构建
@@ -158,21 +158,38 @@ src/
 tests/           # 集成测试：config / dns / router
 ```
 
-## 支持的平台（预编译产物）
+## 支持的平台
+
+**Release**
 
 | 产物 | 架构 | 说明 |
 | --- | --- | --- |
+| `reflex-linux-x86_64` | Linux x86_64 | musl 静态链接 |
+| `reflex-linux-aarch64` | Linux aarch64 (ARM64) | musl 静态链接 |
+| `reflex-windows-x86_64.exe` | Windows x86_64 | MSVC |
+| `reflex-macos-aarch64` | macOS aarch64 (Apple Silicon) | 原生编译 |
+| `reflex-android-arm64-v8a` | Android arm64-v8a | 通过 NDK 构建 |
 | `reflex-linux-x86` | Linux x86 (32-bit) | musl 静态链接 |
 | `reflex-linux-armv7` | Linux ARMv7 | musleabihf 静态链接 |
 | `reflex-windows-x86.exe` | Windows x86 (32-bit) | MSVC |
 | `reflex-android-armv7` | Android ARMv7 | 通过 NDK 构建 |
-| `reflex-linux-mipsle` | Linux MIPS 小端 (soft-float) | musl 静态链接 |
-| `reflex-linux-mips` | Linux MIPS 大端 | musl 静态链接 |
+| `reflex-linux-mipsle` | Linux MIPS 小端 (soft-float) | musl 静态链接，nightly + build-std |
+| `reflex-linux-mips` | Linux MIPS 大端 | musl 静态链接，nightly + build-std |
 
 ## 构建 / CI
 
-仓库使用 GitHub Actions 交叉编译上述全部平台并自动创建 GitHub Release，产物附带
-`.sha256` 校验文件，同时打包 `stable` 分支源码为 `source_code.zip` 一并上传。
+仓库使用 GitHub Actions 交叉编译上述全部平台并自动创建 GitHub Release：
+
+- **主 Release 工作流**：构建 Linux/Windows/macOS 的 x86_64、Linux/Android 的 aarch64，
+  以及 macOS aarch64（Apple Silicon）；均基于 Rust stable 工具链（部分目标通过 `cross`
+  或 `cargo-ndk` 交叉编译）。
+- **32-bit / 冷门架构工作流**：额外构建 x86 (32-bit)、ARMv7、以及 MIPS 大端/小端
+  (soft-float)。MIPS 目标使用固定日期的 Rust nightly 工具链 + `-Z build-std` 从源码
+  重新构建 `std`，以规避 mips 平台缺失 64 位原子指令的问题（详见 `Cargo.toml` 中
+  `portable-atomic` 依赖的注释）。
+
+两条工作流最终都会：将各平台产物连同 `.sha256` 校验文件一起上传到同一个 GitHub Release；
+同时把 `stable` 分支的源码打包为 `source_code.zip`（附 `.sha256`）一并发布。
 
 ## 许可证
 
