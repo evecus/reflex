@@ -114,6 +114,7 @@ jobs:
             --locked \
             --target ${{ matrix.target }} \
             --bin reflex \
+            --no-default-features \
             --features outbound-net
 
       - name: Build reflex (Linux armv7 musleabihf, cross)
@@ -124,6 +125,7 @@ jobs:
             --locked \
             --target ${{ matrix.target }} \
             --bin reflex \
+            --no-default-features \
             --features outbound-net
 
       - name: Build reflex (Windows i686)
