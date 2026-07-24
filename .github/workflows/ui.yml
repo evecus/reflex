@@ -1,10 +1,18 @@
-name: ui release
+name: ui
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version (e.g. v1.0.0)"
+      mode:
+        description: "运行模式：test（固定 tag=test）还是 release（正式发布，需填写版本号）"
         required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - release
+      version:
+        description: "Release version（仅 mode=release 时生效，例如 v1.0.0）"
+        required: false
         default: 'v0.1.0'
         type: string
 permissions:
@@ -55,7 +63,18 @@ jobs:
           ls -lh reflex-dashboard.zip
           cat reflex-dashboard.zip.sha256
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (test)
+        if: github.event.inputs.mode == 'test'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:   test
+          name:       "reflex test"
+          generate_release_notes: true
+          files: |
+            reflex-dashboard.zip
+
+      - name: Create GitHub Release (release)
+        if: github.event.inputs.mode == 'release'
         uses: softprops/action-gh-release@v2
         with:
           tag_name:   ${{ github.event.inputs.version }}
