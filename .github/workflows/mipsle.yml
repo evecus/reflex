@@ -17,6 +17,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: test
 
       - name: Install Rust nightly + rust-src
         uses: dtolnay/rust-toolchain@nightly
