@@ -94,20 +94,24 @@ jobs:
 
           WRAPPER_PATH=/usr/local/bin/mipsle-musl-linker
           cat > "$WRAPPER_PATH" << WRAPPER_EOF
-          #!/bin/sh
-          args=""
-          for a in "$@"; do
-            case "$a" in
-              crt1.o|crti.o|crtn.o) args="$args \"${MUSL_CRT_DIR}/$a\"";;
-              crtbegin.o|crtend.o)  args="$args \"${GCC_CRT_DIR}/$a\"";;
-              *) args="$args \"$a\"";;
+          #!/bin/bash
+          args=()
+          for a in "\$@"; do
+            case "\$a" in
+              crt1.o|crti.o|crtn.o) args+=("${MUSL_CRT_DIR}/\$a");;
+              crtbegin.o|crtend.o)  args+=("${GCC_CRT_DIR}/\$a");;
+              *) args+=("\$a");;
             esac
           done
-          eval exec ${TOOLCHAIN_PREFIX}-gcc -B"${MUSL_CRT_DIR}" -B"${GCC_CRT_DIR}" -L"${MUSL_CRT_DIR}" -L"${GCC_CRT_DIR}" -L"${STUB_DIR}" $args "${LIBGCC_A}"
+          if [ -n "\${LINKER_DEBUG:-}" ]; then
+            echo "[mipsle-musl-linker] argv:" >&2
+            printf '  <%s>\n' "\${args[@]}" >&2
+          fi
+          exec ${TOOLCHAIN_PREFIX}-gcc -B"${MUSL_CRT_DIR}" -B"${GCC_CRT_DIR}" -L"${MUSL_CRT_DIR}" -L"${GCC_CRT_DIR}" -L"${STUB_DIR}" "\${args[@]}" "${LIBGCC_A}"
           WRAPPER_EOF
           chmod +x "$WRAPPER_PATH"
 
-          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32r2",\n  "-C", "target-feature=+crt-static,+mips32r2,+dsp,-fp64",\n  "-C", "panic=abort",\n  "-C", "link-args=-Wl,-u,main -Wl,--no-gc-sections",\n]\n' \
+          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32r2",\n  "-C", "target-feature=+crt-static,+mips32r2,+dsp,-fp64",\n  "-C", "panic=abort",\n]\n' \
             "${TARGET}" "${WRAPPER_PATH}" > .cargo/config.toml
 
       - name: Update Cargo.lock
@@ -117,6 +121,7 @@ jobs:
         run: |
           export CC_mipsel_unknown_linux_musl="${TOOLCHAIN_PREFIX}-gcc"
           export AR_mipsel_unknown_linux_musl="${TOOLCHAIN_PREFIX}-ar"
+          export LINKER_DEBUG=1
           cargo clean --target ${{ env.TARGET }} 2>/dev/null || true
           cargo build \
             --release \
@@ -225,20 +230,24 @@ jobs:
 
           WRAPPER_PATH=/usr/local/bin/mips-musl-linker
           cat > "$WRAPPER_PATH" << WRAPPER_EOF
-          #!/bin/sh
-          args=""
-          for a in "$@"; do
-            case "$a" in
-              crt1.o|crti.o|crtn.o) args="$args \"${MUSL_CRT_DIR}/$a\"";;
-              crtbegin.o|crtend.o)  args="$args \"${GCC_CRT_DIR}/$a\"";;
-              *) args="$args \"$a\"";;
+          #!/bin/bash
+          args=()
+          for a in "\$@"; do
+            case "\$a" in
+              crt1.o|crti.o|crtn.o) args+=("${MUSL_CRT_DIR}/\$a");;
+              crtbegin.o|crtend.o)  args+=("${GCC_CRT_DIR}/\$a");;
+              *) args+=("\$a");;
             esac
           done
-          eval exec ${TOOLCHAIN_PREFIX}-gcc -B"${MUSL_CRT_DIR}" -B"${GCC_CRT_DIR}" -L"${MUSL_CRT_DIR}" -L"${GCC_CRT_DIR}" -L"${STUB_DIR}" $args "${LIBGCC_A}"
+          if [ -n "\${LINKER_DEBUG:-}" ]; then
+            echo "[mips-musl-linker] argv:" >&2
+            printf '  <%s>\n' "\${args[@]}" >&2
+          fi
+          exec ${TOOLCHAIN_PREFIX}-gcc -B"${MUSL_CRT_DIR}" -B"${GCC_CRT_DIR}" -L"${MUSL_CRT_DIR}" -L"${GCC_CRT_DIR}" -L"${STUB_DIR}" "\${args[@]}" "${LIBGCC_A}"
           WRAPPER_EOF
           chmod +x "$WRAPPER_PATH"
 
-          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32",\n  "-C", "target-feature=+crt-static",\n  "-C", "panic=abort",\n  "-C", "link-args=-Wl,-u,main -Wl,--no-gc-sections",\n]\n' \
+          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32",\n  "-C", "target-feature=+crt-static",\n  "-C", "panic=abort",\n]\n' \
             "${TARGET}" "${WRAPPER_PATH}" > .cargo/config.toml
 
       - name: Update Cargo.lock
@@ -248,6 +257,7 @@ jobs:
         run: |
           export CC_mips_unknown_linux_musl="${TOOLCHAIN_PREFIX}-gcc"
           export AR_mips_unknown_linux_musl="${TOOLCHAIN_PREFIX}-ar"
+          export LINKER_DEBUG=1
           cargo clean --target ${{ env.TARGET }} 2>/dev/null || true
           cargo build \
             --release \
