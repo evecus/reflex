@@ -36,6 +36,14 @@ jobs:
             os:       windows-latest
             artifact: reflex-windows-x86_64
             cross:    false
+          - target:   aarch64-apple-darwin
+            os:       macos-latest
+            artifact: reflex-macos-aarch64
+            cross:    false
+          - target:   aarch64-linux-android
+            os:       ubuntu-latest
+            artifact: reflex-android-arm64-v8a
+            cross:    false
 
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +78,18 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cross
+
+      - name: Install Android NDK
+        if: matrix.target == 'aarch64-linux-android'
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          add-to-path: true
+
+      - name: Install cargo-ndk
+        if: matrix.target == 'aarch64-linux-android'
+        run: cargo install cargo-ndk --locked
 
       - name: Inject version into Cargo.toml
         shell: bash
@@ -116,13 +136,61 @@ jobs:
             --no-default-features \
             --features outbound-net
 
+      - name: Build reflex (macOS aarch64, native)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          cargo build \
+            --release \
+            --locked \
+            --target ${{ matrix.target }} \
+            --bin reflex \
+            --features outbound-net
+
+      - name: Build reflex (Android arm64-v8a, NDK)
+        if: matrix.target == 'aarch64-linux-android'
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          cargo ndk \
+            --target aarch64-linux-android \
+            --platform 24 \
+            -o target-ndk-out \
+            build \
+            --release \
+            --locked \
+            --bin reflex \
+            --features outbound-net
+
       # ── 收集产物（Linux：直接二进制；Windows：.exe） ────────────────────
       - name: Collect binary (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.target != 'aarch64-linux-android'
         run: |
           BIN="target/${{ matrix.target }}/release/reflex"
           cp "$BIN" "${{ matrix.artifact }}"
           sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          echo "=== Build output ==="
+          ls -lh "${{ matrix.artifact }}"
+          cat    "${{ matrix.artifact }}.sha256"
+
+      - name: Collect binary (Android)
+        if: matrix.target == 'aarch64-linux-android'
+        run: |
+          # cargo-ndk 用 -o target-ndk-out 时按 ABI 名分子目录输出，
+          # 与普通 cargo build --target 的 target/<triple>/release/ 路径不同
+          BIN="target-ndk-out/arm64-v8a/reflex"
+          cp "$BIN" "${{ matrix.artifact }}"
+          sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          echo "=== Build output ==="
+          ls -lh "${{ matrix.artifact }}"
+          cat    "${{ matrix.artifact }}.sha256"
+
+      - name: Collect binary (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          BIN="target/${{ matrix.target }}/release/reflex"
+          cp "$BIN" "${{ matrix.artifact }}"
+          # macOS 自带 shasum 而非 sha256sum
+          shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
           echo "=== Build output ==="
           ls -lh "${{ matrix.artifact }}"
           cat    "${{ matrix.artifact }}.sha256"
@@ -142,6 +210,16 @@ jobs:
 
       - name: Upload artifact (Linux)
         if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
+          retention-days: 1
+
+      - name: Upload artifact (macOS)
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -185,17 +263,6 @@ jobs:
           cat checksums.txt
           cp config.example.json artifacts/config.json
 
-      - name: Delete existing pre-releases and their tags
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release list --limit 100 --json tagName,isPrerelease \
-            --jq '.[] | select(.isPrerelease) | .tagName' \
-            | while read -r tag; do
-                echo "Deleting pre-release and tag: $tag"
-                gh release delete "$tag" --yes --cleanup-tag || true
-              done
-
       - name: Create and push tag
         run: |
           VERSION="${{ github.event.inputs.version }}"
@@ -216,4 +283,6 @@ jobs:
             artifacts/reflex-linux-aarch64/reflex-linux-aarch64
             artifacts/reflex-linux-x86_64/reflex-linux-x86_64
             artifacts/reflex-windows-x86_64/reflex-windows-x86_64.exe
+            artifacts/reflex-macos-aarch64/reflex-macos-aarch64
+            artifacts/reflex-android-arm64-v8a/reflex-android-arm64-v8a
             artifacts/config.json
