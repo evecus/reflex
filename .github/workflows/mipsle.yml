@@ -107,7 +107,7 @@ jobs:
           WRAPPER_EOF
           chmod +x "$WRAPPER_PATH"
 
-          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32r2",\n  "-C", "target-feature=+crt-static,+mips32r2,+dsp,-fp64",\n  "-C", "panic=abort",\n]\n' \
+          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32r2",\n  "-C", "target-feature=+crt-static,+mips32r2,+dsp,-fp64",\n  "-C", "panic=abort",\n  "-C", "link-args=-Wl,-u,main -Wl,--no-gc-sections",\n]\n' \
             "${TARGET}" "${WRAPPER_PATH}" > .cargo/config.toml
 
       - name: Update Cargo.lock
@@ -238,7 +238,7 @@ jobs:
           WRAPPER_EOF
           chmod +x "$WRAPPER_PATH"
 
-          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32",\n  "-C", "target-feature=+crt-static",\n  "-C", "panic=abort",\n]\n' \
+          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32",\n  "-C", "target-feature=+crt-static",\n  "-C", "panic=abort",\n  "-C", "link-args=-Wl,-u,main -Wl,--no-gc-sections",\n]\n' \
             "${TARGET}" "${WRAPPER_PATH}" > .cargo/config.toml
 
       - name: Update Cargo.lock
