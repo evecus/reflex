@@ -17,8 +17,11 @@ jobs:
     name: Build aarch64-unknown-linux-musl
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: test
+          fetch-depth: 0
+
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
