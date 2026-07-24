@@ -1,8 +1,14 @@
 name: Build Dashboard
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. v1.0.0)"
+        required: true
+        default: 'v0.1.0'
+        type: string
 permissions:
-  contents: write   # tag 推送时创建 release 需要
+  contents: write
 
 jobs:
   build:
