@@ -20,9 +20,17 @@ jobs:
         with:
           ref: test
 
+      # 固定 nightly 到具体日期，而非滚动的 nightly 最新版：
+      # 2026-07-23/24 附近的 nightly 在编译 tokio（mipsel softfloat + -Z build-std
+      # 这种冷门 target-feature 组合）时会在 codegen 阶段触发 rustc 内部错误
+      # (ICE, "not immediate: OperandRef(...Notified<Arc<...Handle>>...)")，
+      # 这是 rustc 自身在该组合下的 bug，不是本 workflow 的配置问题。
+      # 若这个日期仍然复现 ICE，替换成更早的日期重试；若已确认某个日期稳定，
+      # 把下面两处（build 和 build-mips 两个 job）的 toolchain 值都同步改掉。
       - name: Install Rust nightly + rust-src
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-07-01
           components: rust-src
 
       - name: Cache cargo registry
@@ -103,14 +111,14 @@ jobs:
             "${TARGET}" "${WRAPPER_PATH}" > .cargo/config.toml
 
       - name: Update Cargo.lock
-        run: cargo +nightly generate-lockfile
+        run: cargo generate-lockfile
 
       - name: Build reflex
         run: |
           export CC_mipsel_unknown_linux_musl="${TOOLCHAIN_PREFIX}-gcc"
           export AR_mipsel_unknown_linux_musl="${TOOLCHAIN_PREFIX}-ar"
-          cargo +nightly clean --target ${{ env.TARGET }} 2>/dev/null || true
-          cargo +nightly build \
+          cargo clean --target ${{ env.TARGET }} 2>/dev/null || true
+          cargo build \
             --release \
             -Z build-std="std,panic_abort" \
             --target ${{ env.TARGET }} \
@@ -153,9 +161,12 @@ jobs:
         with:
           ref: test
 
+      # 与上面 mipsle softfloat job 使用同一固定日期，避免两个 job 用不同
+      # nightly 版本导致行为不一致；调整日期时两处需同步修改。
       - name: Install Rust nightly + rust-src
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-07-01
           components: rust-src
 
       - name: Cache cargo registry
@@ -231,14 +242,14 @@ jobs:
             "${TARGET}" "${WRAPPER_PATH}" > .cargo/config.toml
 
       - name: Update Cargo.lock
-        run: cargo +nightly generate-lockfile
+        run: cargo generate-lockfile
 
       - name: Build reflex
         run: |
           export CC_mips_unknown_linux_musl="${TOOLCHAIN_PREFIX}-gcc"
           export AR_mips_unknown_linux_musl="${TOOLCHAIN_PREFIX}-ar"
-          cargo +nightly clean --target ${{ env.TARGET }} 2>/dev/null || true
-          cargo +nightly build \
+          cargo clean --target ${{ env.TARGET }} 2>/dev/null || true
+          cargo build \
             --release \
             -Z build-std="std,panic_abort" \
             --target ${{ env.TARGET }} \
