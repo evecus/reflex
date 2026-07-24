@@ -40,6 +40,10 @@ jobs:
             os:       macos-latest
             artifact: reflex-macos-aarch64
             cross:    false
+          # Android arm64：官方 Rust target aarch64-linux-android，用 Android NDK
+          # 自带的 clang 工具链链接 bionic libc，产物按 arm64-v8a ABI 命名，可
+          # 直接放进 APK 的 jniLibs/arm64-v8a/ 目录（Android 原生识别的标准方式，
+          # 与放 musl 静态二进制去 exec 调起是两条不同路线，不能混用）。
           - target:   aarch64-linux-android
             os:       ubuntu-latest
             artifact: reflex-android-arm64-v8a
@@ -96,7 +100,11 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version }}"
           VERSION="${VERSION#v}"
-          sed -i "s/^version = .*/version = \"${VERSION}\"/" Cargo.toml
+          # macOS 自带 BSD sed，-i 必须显式带备份后缀参数（即使是空字符串），
+          # 而 Linux/Windows(bash) 用的 GNU sed 则不需要，两者语法不兼容。
+          # 用 -i.bak + 删除备份文件的写法在两个 sed 实现下都能正确工作。
+          sed -i.bak "s/^version = .*/version = \"${VERSION}\"/" Cargo.toml
+          rm -f Cargo.toml.bak
 
       - name: Update Cargo.lock to match new version
         shell: bash
