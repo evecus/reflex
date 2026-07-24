@@ -58,8 +58,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ui-test
-          name: "Reflex Dashboard test"
+          tag_name:   ${{ github.event.inputs.version }}
+          name:       "reflex ${{ github.event.inputs.version }}"
           generate_release_notes: true
           files: |
             reflex-dashboard.zip
