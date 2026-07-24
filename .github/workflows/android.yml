@@ -1,17 +1,6 @@
 name: Build Android arm64 (musl static binary)
 
-# 目标：产出一个可在 Android arm64-v8a 设备上直接运行的静态链接二进制。
-# 做法：交叉编译到 aarch64-unknown-linux-musl（而不是 aarch64-linux-android），
-# 因为 musl 静态链接产物不依赖系统 libc 版本，可以绕开各厂商 bionic 版本差异，
-# 这是 Android 端 VPN/代理内核类二进制常见的发布方式（随 APK 打包，或由前端
-# App 释放到私有目录后 exec 调起）。
-
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       release:
@@ -25,7 +14,7 @@ env:
 
 jobs:
   build:
-    name: Build ${{ github.event.repository.name }} (${{ env.TARGET }})
+    name: Build aarch64-unknown-linux-musl
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -34,12 +23,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ env.TARGET }}
+          targets: aarch64-unknown-linux-musl
 
       - name: Cache cargo & target
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ env.TARGET }}
+          key: aarch64-unknown-linux-musl
 
       # 用 cross 而非原生 cargo 直接指定 musl target：
       # 项目 outbound-net feature 拉入 ring（含少量 asm/C 代码）、tun 等带 C
@@ -79,10 +68,10 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BIN_NAME }}-android-arm64-musl
+          name: reflex-android-arm64-musl
           path: |
-            dist/${{ env.BIN_NAME }}-android-arm64
-            dist/${{ env.BIN_NAME }}-android-arm64.sha256
+            dist/reflex-android-arm64
+            dist/reflex-android-arm64.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -91,6 +80,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/${{ env.BIN_NAME }}-android-arm64
-            dist/${{ env.BIN_NAME }}-android-arm64.sha256
+            dist/reflex-android-arm64
+            dist/reflex-android-arm64.sha256
           generate_release_notes: true
