@@ -1,5 +1,12 @@
-# reflex
+<div align="center">
+<br>
+<img width="200" src="https://raw.githubusercontent.com/evecus/reflex/refs/heads/ui/public/favicon.svg" alt="Sub-Store">
+<br>
+<br>
+<h2 align="center">reflex<h2>
+</div>
 
+<p align="center" color="#6a737d">
 一个用 Rust 编写的高性能通用代理内核，配置与规则集格式对齐 sing-box / Clash(mihomo)，
 支持主流代理协议、DNS 分流（含 FakeIP）、透明代理（TProxy/TUN）与 Clash 兼容管理 API。
 
