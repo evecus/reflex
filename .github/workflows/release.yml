@@ -121,8 +121,7 @@ jobs:
             --release \
             --locked \
             --target ${{ matrix.target }} \
-            --bin reflex \
-            --features outbound-net
+            --bin reflex
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
 
@@ -133,8 +132,7 @@ jobs:
             --release \
             --locked \
             --target ${{ matrix.target }} \
-            --bin reflex \
-            --features outbound-net
+            --bin reflex
 
       - name: Build reflex (Windows)
         if: matrix.target == 'x86_64-pc-windows-msvc'
@@ -145,8 +143,7 @@ jobs:
             --locked \
             --target ${{ matrix.target }} \
             --bin reflex \
-            --no-default-features \
-            --features outbound-net
+            --no-default-features
 
       - name: Build reflex (macOS aarch64, native)
         if: matrix.target == 'aarch64-apple-darwin'
@@ -155,8 +152,7 @@ jobs:
             --release \
             --locked \
             --target ${{ matrix.target }} \
-            --bin reflex \
-            --features outbound-net
+            --bin reflex
 
       - name: Build reflex (Android arm64-v8a, NDK)
         if: matrix.target == 'aarch64-linux-android'
@@ -169,8 +165,7 @@ jobs:
             build \
             --release \
             --locked \
-            --bin reflex \
-            --features outbound-net
+            --bin reflex
 
       # ── 收集产物（Linux：直接二进制；Windows：.exe） ────────────────────
       - name: Collect binary (Linux)
