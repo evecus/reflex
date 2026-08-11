@@ -3,8 +3,9 @@
   "rules": [
     {
       "domain_suffix": [
-        "hkopentv.com",
-        "fantv.hk"
+        "fly.dev",
+        "fly.io",
+        "flyio.net"
       ]
     }
   ]

@@ -10,10 +10,6 @@
         "uplaypc-s-ubisoft.cdn.ubi.com"
       ],
       "domain_suffix": [
-        "xboxlive.cn",
-        "yostar.cn",
-        "leagueoflegends.cn",
-        "lpl.com.cn",
         "steamserver.net",
         "steamusercontent.com",
         "csgo.com.cn",
@@ -30,7 +26,9 @@
         "steamstatic.com.8686c.com",
         "steamchina.com",
         "gstore.val.manlaxy.com",
-        "bluearchive-cn.com",
+        "yostar.cn",
+        "leagueoflegends.cn",
+        "lpl.com.cn",
         "legendofzelda.cn",
         "legendofzelda.com.cn",
         "miitomo.com.cn",
@@ -42,7 +40,9 @@
         "xn--mts47c3w9b1qr.cn",
         "mariokart.cn",
         "mariokart.com.cn",
-        "supermariobros.com.cn"
+        "supermariobros.com.cn",
+        "xboxlive.cn",
+        "bluearchive-cn.com"
       ],
       "domain_regex": [
         "^.+-mihayo\\.akamaized\\.net$",

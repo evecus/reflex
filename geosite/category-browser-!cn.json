@@ -2,18 +2,21 @@
   "version": 2,
   "rules": [
     {
-      "domain": "mozilla-ohttp.fastly-edge.com",
+      "domain": [
+        "mozilla-ohttp.fastly-edge.com",
+        "mozilla.map.fastly.net"
+      ],
       "domain_suffix": [
         "chrome",
         "netsurf-browser.org",
-        "opera.com",
+        "palemoon.org",
         "basilisk-browser.org",
         "brave.com",
         "bromite.org",
         "censorship.no",
         "cromite.org",
         "decentr.net",
-        "dothq.org",
+        "opera.com",
         "floorp.app",
         "iridiumbrowser.de",
         "kiwibrowser.com",
@@ -21,9 +24,9 @@
         "librewolf.net",
         "chromium.org",
         "minbrowser.org",
-        "pulsebrowser.app",
-        "palemoon.org",
+        "dothq.org",
         "chrome.com",
+        "pulsebrowser.app",
         "qutebrowser.org",
         "vivaldi.com",
         "waterfox.net",
@@ -35,6 +38,7 @@
         "firefoxtweetmachine.com",
         "firefoxusercontent.com",
         "torproject.org",
+        "ceno.app",
         "browser.kagi.com"
       ]
     }
