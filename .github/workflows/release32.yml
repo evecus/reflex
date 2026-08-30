@@ -135,7 +135,8 @@ jobs:
             --locked \
             --target ${{ matrix.target }} \
             --bin reflex \
-            --no-default-features
+            --no-default-features \
+            --features mimalloc
 
       - name: Build reflex (Android armv7, NDK)
         if: matrix.target == 'armv7-linux-androideabi'
