@@ -8,7 +8,6 @@ import {
   ListOrdered,
   LogOut,
   ScrollText,
-  Server,
   Settings as SettingsIcon,
   Wifi,
   X,
@@ -223,7 +222,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div className={clsx('flex items-center gap-3 px-4', compact ? 'h-full' : 'h-16 border-b border-white/5')}>
       <motion.div
-        className="w-9 h-9 rounded-xl flex items-center justify-center relative"
+        className="w-9 h-9 rounded-xl flex items-center justify-center relative overflow-hidden"
         style={{
           background: 'linear-gradient(135deg, rgb(var(--c-accent) / 0.25), rgb(var(--c-accent-2) / 0.18))',
           border: '1px solid rgb(var(--c-accent) / 0.35)',
@@ -231,7 +230,14 @@ function Brand({ compact = false }: { compact?: boolean }) {
         animate={{ boxShadow: ['0 0 12px -2px rgb(var(--c-accent) / 0.3)', '0 0 20px -2px rgb(var(--c-accent) / 0.5)', '0 0 12px -2px rgb(var(--c-accent) / 0.3)'] }}
         transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
       >
-        <Server size={17} className="text-accent" />
+        <img
+          src={`${import.meta.env.BASE_URL}favicon.svg`}
+          alt="Reflex"
+          width={20}
+          height={19}
+          className="relative z-10"
+          draggable={false}
+        />
       </motion.div>
       <div className="leading-tight">
         <div className="text-sm font-bold tracking-tight text-gradient">Reflex</div>
