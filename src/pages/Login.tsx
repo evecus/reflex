@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Server,
+  Link2,
   KeyRound,
   Loader,
   XCircle,
@@ -60,7 +60,7 @@ export default function Login() {
         {/* 品牌 */}
         <div className="flex flex-col items-center mb-8">
           <motion.div
-            className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4 relative"
+            className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4 relative overflow-hidden"
             style={{
               background: 'linear-gradient(135deg, rgb(var(--c-accent) / 0.22), rgb(var(--c-accent-2) / 0.16))',
               border: '1px solid rgb(var(--c-accent) / 0.35)',
@@ -68,7 +68,14 @@ export default function Login() {
             animate={{ boxShadow: ['0 0 24px -4px rgb(var(--c-accent) / 0.35)', '0 0 40px -4px rgb(var(--c-accent) / 0.55)', '0 0 24px -4px rgb(var(--c-accent) / 0.35)'] }}
             transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
           >
-            <Server size={26} className="text-accent" />
+            <img
+              src={`${import.meta.env.BASE_URL}favicon.svg`}
+              alt="Reflex"
+              width={32}
+              height={30}
+              className="relative z-10"
+              draggable={false}
+            />
           </motion.div>
           <h1 className="text-2xl font-bold tracking-tight text-gradient">Reflex Dashboard</h1>
           <p className="text-xs font-mono text-fg-subtle uppercase tracking-wider mt-1.5">
@@ -81,7 +88,7 @@ export default function Login() {
           {/* baseURL */}
           <div className="space-y-1.5">
             <label className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-wider text-fg-muted">
-              <Server size={12} className="text-accent" />
+              <Link2 size={12} className="text-accent" />
               Base URL
             </label>
             <input
