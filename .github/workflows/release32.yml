@@ -114,7 +114,8 @@ jobs:
             --locked \
             --target ${{ matrix.target }} \
             --bin reflex \
-            --no-default-features
+            --no-default-features \
+            --features mimalloc
 
       - name: Build reflex (Linux armv7 musleabihf, cross)
         if: matrix.target == 'armv7-unknown-linux-musleabihf'
@@ -124,7 +125,8 @@ jobs:
             --locked \
             --target ${{ matrix.target }} \
             --bin reflex \
-            --no-default-features
+            --no-default-features \
+            --features mimalloc
 
       - name: Build reflex (Windows x86)
         if: matrix.target == 'i686-pc-windows-msvc'
