@@ -51,14 +51,22 @@ jobs:
 
       - name: Pack artifact
         run: |
-          # 把 dist/ 打包成 zip，便于用户直接解压到 reflex external_ui 目录
-          cd dist
-          zip -r ../reflex-dashboard.zip .
+          # 创建一个带文件夹名的临时目录，把 dist 内容放进去
+          mkdir -p package/ui
+          cp -r dist/. package/ui/
+
+          # 对这个父目录打包，这样 zip 里会保留 ui/ 这一层
+          cd package
+          zip -r ../reflex-dashboard.zip ui
           cd ..
+
           # 生成 sha256
           sha256sum reflex-dashboard.zip > reflex-dashboard.zip.sha256
+
           echo "=== Build output ==="
           ls -lh dist/
+          echo "=== Package structure ==="
+          find package -maxdepth 2
           echo "=== Artifact ==="
           ls -lh reflex-dashboard.zip
           cat reflex-dashboard.zip.sha256
