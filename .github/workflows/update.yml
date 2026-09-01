@@ -2,9 +2,6 @@ name: update cargo.lock
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'Cargo.toml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,11 +16,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: stable
+          fetch-depth: 0
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-unknown-linux-musl
+          targets: x86_64-unknown-linux-musl
 
 
       - name: Update Cargo.lock
@@ -35,4 +35,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Cargo.lock
           git diff --cached --quiet || git commit -m "chore: update Cargo.lock [skip ci]"
-          git push
+          git push origin HEAD:stable
