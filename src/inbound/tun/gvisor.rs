@@ -14,11 +14,11 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
+use crate::app::outbound_mgr::OutboundManager;
 use crate::inbound::{
     dns::{DnsQuery, DnsQuerySource, DnsQueryTx},
     InboundTcpStream, InboundUdpPacket, SniffedStream, Target, UdpSession,
 };
-use crate::app::outbound_mgr::OutboundManager;
 use crate::router::Router;
 
 /// 运行 gvisor 栈的 TUN inbound。
@@ -65,13 +65,12 @@ pub async fn run_gvisor(
         let fwd = IcmpForwarder::new(tun_writer.clone());
         // 注入路由器/出站管理器：启用 `network:"icmp"` 规则匹配
         // （reject/block/非直连出站丢弃等）。未注入时退化为始终转发。
-        let fwd = if let (Some(router), Some(outbound_mgr)) =
-            (router.as_ref(), outbound_mgr.as_ref())
-        {
-            fwd.with_router(router.clone(), outbound_mgr.clone(), tag.clone())
-        } else {
-            fwd
-        };
+        let fwd =
+            if let (Some(router), Some(outbound_mgr)) = (router.as_ref(), outbound_mgr.as_ref()) {
+                fwd.with_router(router.clone(), outbound_mgr.clone(), tag.clone())
+            } else {
+                fwd
+            };
         Some(fwd)
     };
     // F8：非 unix 平台（Windows）的 ICMP 回环 Echo Reply 专用 writer。
@@ -132,8 +131,10 @@ pub async fn run_gvisor(
                     }
                 }
                 if raw.len() >= 48 && raw[0] >> 4 == 6 && raw[6] == 58 {
-                    let src = Ipv6Addr::from(<[u8; 16]>::try_from(&raw[8..24]).unwrap_or([0u8; 16]));
-                    let dst = Ipv6Addr::from(<[u8; 16]>::try_from(&raw[24..40]).unwrap_or([0u8; 16]));
+                    let src =
+                        Ipv6Addr::from(<[u8; 16]>::try_from(&raw[8..24]).unwrap_or([0u8; 16]));
+                    let dst =
+                        Ipv6Addr::from(<[u8; 16]>::try_from(&raw[24..40]).unwrap_or([0u8; 16]));
                     super::handle_icmpv6(&raw, src, dst, None, icmp_echo_writer.clone()).await;
                     continue;
                 }
@@ -236,9 +237,9 @@ pub async fn run_gvisor(
     // 回包 MTU（对齐 system 栈 F3：超 MTU 回包按协议分片 / ICMP 通告，不静默丢包）
     let reply_mtu = mtu;
     let udp_dispatch = tokio::spawn(async move {
-// UDP 会话表（EIM，对齐 sing-tun tun_nat.go：key = 源地址）
-let udp_sessions: Arc<Mutex<HashMap<SocketAddr, UdpReplyEntry>>> =
-Arc::new(Mutex::new(HashMap::new()));
+        // UDP 会话表（EIM，对齐 sing-tun tun_nat.go：key = 源地址）
+        let udp_sessions: Arc<Mutex<HashMap<SocketAddr, UdpReplyEntry>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         // GC task：定期清理超时 UDP 会话（F3：使用配置的 udp_timeout，
         // 旧实现写死 300s 常量，配置 udp_timeout 不生效）
@@ -301,9 +302,9 @@ Arc::new(Mutex::new(HashMap::new()));
                 }
             }
 
-// EIM：key 只按源地址（对齐 sing-tun tun_nat.go）
-let key = src;
-let mut sessions = udp_sessions.lock().await;
+            // EIM：key 只按源地址（对齐 sing-tun tun_nat.go）
+            let key = src;
+            let mut sessions = udp_sessions.lock().await;
             let entry = sessions.entry(key).or_insert_with(|| {
                 debug!(src = %src, dst = %dst, "tun(gvisor): new UDP session");
                 let (reply_tx, mut reply_rx) = mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(64);
@@ -550,15 +551,7 @@ pub async fn run_mixed(
             let p4 = inet4_prefixes.clone();
             let p6 = inet6_prefixes.clone();
             accept_tasks.push(tokio::spawn(async move {
-                super::accept_loop(
-                    listener,
-                    tcp_nat_clone,
-                    tcp_tx_clone,
-                    tag_clone,
-                    p4,
-                    p6,
-                )
-                .await;
+                super::accept_loop(listener, tcp_nat_clone, tcp_tx_clone, tag_clone, p4, p6).await;
             }));
             port
         } else {
@@ -597,15 +590,7 @@ pub async fn run_mixed(
             let p4 = inet4_prefixes.clone();
             let p6 = inet6_prefixes.clone();
             accept_tasks.push(tokio::spawn(async move {
-                super::accept_loop(
-                    listener,
-                    tcp_nat_clone,
-                    tcp_tx_clone,
-                    tag_clone,
-                    p4,
-                    p6,
-                )
-                .await;
+                super::accept_loop(listener, tcp_nat_clone, tcp_tx_clone, tag_clone, p4, p6).await;
             }));
             port
         } else {
@@ -693,9 +678,9 @@ pub async fn run_mixed(
     );
 
     // ── UDP 会话表（gvisor UDP 路径，与 run_gvisor 一致）─────────────────
-// UDP 会话表（EIM，对齐 sing-tun tun_nat.go：key = 源地址）
-let udp_sessions: Arc<Mutex<HashMap<SocketAddr, UdpReplyEntry>>> =
-Arc::new(Mutex::new(HashMap::new()));
+    // UDP 会话表（EIM，对齐 sing-tun tun_nat.go：key = 源地址）
+    let udp_sessions: Arc<Mutex<HashMap<SocketAddr, UdpReplyEntry>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     {
         let sessions = udp_sessions.clone();
         tokio::spawn(async move {
@@ -703,7 +688,10 @@ Arc::new(Mutex::new(HashMap::new()));
             let mut ticker = tokio::time::interval(udp_timeout / 2);
             loop {
                 ticker.tick().await;
-                sessions.lock().await.retain(|_, v| v.last_seen.elapsed() < udp_timeout);
+                sessions
+                    .lock()
+                    .await
+                    .retain(|_, v| v.last_seen.elapsed() < udp_timeout);
             }
         });
     }
@@ -757,9 +745,9 @@ Arc::new(Mutex::new(HashMap::new()));
                 }
             }
 
-// EIM：key 只按源地址（对齐 sing-tun tun_nat.go）
-let key = src;
-let mut sessions = udp_sessions.lock().await;
+            // EIM：key 只按源地址（对齐 sing-tun tun_nat.go）
+            let key = src;
+            let mut sessions = udp_sessions.lock().await;
             let entry = sessions.entry(key).or_insert_with(|| {
                 debug!(src = %src, dst = %dst, "tun(mixed/gvisor): new UDP session");
                 let (reply_tx, mut reply_rx) = mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(64);

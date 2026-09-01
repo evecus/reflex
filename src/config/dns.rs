@@ -413,10 +413,7 @@ impl DnsRuleConfig {
 
     /// 是否为 predefined 动作（`action: "predefined"`）。
     pub fn is_predefined_rule(&self) -> bool {
-        matches!(
-            self.action.as_ref(),
-            Some(DnsRuleAction::Predefined { .. })
-        )
+        matches!(self.action.as_ref(), Some(DnsRuleAction::Predefined { .. }))
     }
 }
 
@@ -469,7 +466,10 @@ fn dns_action_params(action: &str) -> &'static [&'static str] {
 }
 
 /// 校验 DNS 规则对象的字段归属：条件字段或当前 action 的参数，其余报错。
-fn validate_dns_action_fields(action: &str, obj: &serde_json::Map<String, serde_json::Value>) -> anyhow::Result<()> {
+fn validate_dns_action_fields(
+    action: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> anyhow::Result<()> {
     let params = dns_action_params(action);
     for key in obj.keys() {
         if !DNS_COMMON_FIELDS.contains(&key.as_str()) && !params.contains(&key.as_str()) {
@@ -504,16 +504,13 @@ impl DnsRuleConfig {
                     .as_object()
                     .ok_or_else(|| anyhow::anyhow!("dns rule must be an object"))?;
                 validate_dns_action_fields("route", obj)?;
-                let server = serde_json::from_value(
-                    obj.get("server")
-                        .cloned()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "dns rule: missing required field `server` \
+                let server =
+                    serde_json::from_value(obj.get("server").cloned().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "dns rule: missing required field `server` \
                                  (no `action` specified, defaults to `route`)"
-                            )
-                        })?,
-                )?;
+                        )
+                    })?)?;
                 let strategy = obj
                     .get("strategy")
                     .cloned()
@@ -1088,7 +1085,11 @@ mod tests {
         });
         let dns: DnsConfig = serde_json::from_value(v).unwrap();
         match dns.rules[0].action {
-            Some(DnsRuleAction::Route { ref rewrite_ttl, ref client_subnet, .. }) => {
+            Some(DnsRuleAction::Route {
+                ref rewrite_ttl,
+                ref client_subnet,
+                ..
+            }) => {
                 assert_eq!(*rewrite_ttl, Some(60));
                 assert_eq!(client_subnet.as_deref(), Some("1.2.3.0/24"));
             }
@@ -1108,7 +1109,11 @@ mod tests {
         });
         let dns: DnsConfig = serde_json::from_value(v).unwrap();
         match dns.rules[0].action {
-            Some(DnsRuleAction::Route { ref rewrite_ttl, ref client_subnet, .. }) => {
+            Some(DnsRuleAction::Route {
+                ref rewrite_ttl,
+                ref client_subnet,
+                ..
+            }) => {
                 assert_eq!(*rewrite_ttl, None);
                 assert_eq!(*client_subnet, None);
             }
@@ -1225,10 +1230,7 @@ mod tests {
         );
         assert_eq!(dns.rules[0].server_tags(), vec!["local".to_string()]);
         // 数组形式
-        assert_eq!(
-            dns.rules[1].server_tags(),
-            vec!["local".to_string()]
-        );
+        assert_eq!(dns.rules[1].server_tags(), vec!["local".to_string()]);
     }
 
     #[test]
@@ -1333,7 +1335,9 @@ mod tests {
         // 序列化包含 action tag
         assert!(s.contains("\"action\":\"block\"") || s.contains("\"action\": \"block\""));
         assert!(s.contains("\"action\":\"route\"") || s.contains("\"action\": \"route\""));
-        assert!(s.contains("\"action\":\"predefined\"") || s.contains("\"action\": \"predefined\""));
+        assert!(
+            s.contains("\"action\":\"predefined\"") || s.contains("\"action\": \"predefined\"")
+        );
     }
 
     #[test]

@@ -64,11 +64,9 @@ pub async fn teardown(
         let cfg = cfg.clone();
         let if_name = if_name.to_string();
         let state = state.clone();
-        return tokio::task::spawn_blocking(move || {
-            windows::teardown(&cfg, &if_name, &state)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("teardown blocking task join error: {e}"))?;
+        return tokio::task::spawn_blocking(move || windows::teardown(&cfg, &if_name, &state))
+            .await
+            .map_err(|e| anyhow::anyhow!("teardown blocking task join error: {e}"))?;
     }
 
     #[cfg(not(any(

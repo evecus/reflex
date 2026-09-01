@@ -347,8 +347,7 @@ impl Outbound for TuicOutbound {
             tokio::spawn(async move {
                 let mut pkt_id: u16 = 1;
                 while let Some((target, data)) = upstream_rx.recv().await {
-                    if send_udp_fragmented(&conn_send, session_id, pkt_id, &target, &data)
-                        .is_err()
+                    if send_udp_fragmented(&conn_send, session_id, pkt_id, &target, &data).is_err()
                     {
                         break;
                     }

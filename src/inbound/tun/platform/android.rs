@@ -385,7 +385,9 @@ pub async fn setup(cfg: &TunInboundConfig, if_name: &str) -> anyhow::Result<Setu
         for family in rule_families(has_v4, has_v6) {
             add_family_rule(
                 family,
-                &["priority", &prio_str, "uidrange", &uid_range, "goto", &nop_str],
+                &[
+                    "priority", &prio_str, "uidrange", &uid_range, "goto", &nop_str,
+                ],
                 prio_base,
                 &mut state,
             );

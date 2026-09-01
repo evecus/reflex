@@ -458,7 +458,12 @@ async fn reality_handshake(
             }
             HS_FINISHED => {
                 server_finished = msg.raw;
-                verify_finished(cipher.hash_kind(), &hs.server_secret, &transcript, &msg.body)?;
+                verify_finished(
+                    cipher.hash_kind(),
+                    &hs.server_secret,
+                    &transcript,
+                    &msg.body,
+                )?;
                 debug!("REALITY: server Finished verified");
                 break;
             }
@@ -481,7 +486,9 @@ async fn reality_handshake(
     transcript.extend_from_slice(&server_finished);
     let app = ApplicationKeys::derive(cipher, &hs.master_secret, &transcript);
 
-    let client_finished_body = cipher.hash_kind().finished_verify_data(&hs.client_secret, &transcript);
+    let client_finished_body = cipher
+        .hash_kind()
+        .finished_verify_data(&hs.client_secret, &transcript);
     let mut client_finished = Vec::with_capacity(4 + client_finished_body.len());
     client_finished.push(HS_FINISHED);
     put_u24(client_finished_body.len(), &mut client_finished);
@@ -1129,13 +1136,7 @@ impl HashKind {
         okm
     }
 
-    fn hkdf_expand_label(
-        self,
-        secret: &[u8],
-        label: &[u8],
-        context: &[u8],
-        len: usize,
-    ) -> Vec<u8> {
+    fn hkdf_expand_label(self, secret: &[u8], label: &[u8], context: &[u8], len: usize) -> Vec<u8> {
         let mut info = Vec::with_capacity(2 + 1 + 6 + label.len() + 1 + context.len());
         put_u16(len as u16, &mut info);
         info.push((6 + label.len()) as u8);
@@ -1186,8 +1187,10 @@ impl HandshakeKeys {
         let derived = hash.derive_secret(&early_secret, b"derived", &empty_hash);
         let handshake_secret = hash.hkdf_extract(&derived, shared_secret);
         let transcript_hash = hash.digest(transcript);
-        let client_secret = hash.derive_secret(&handshake_secret, b"c hs traffic", &transcript_hash);
-        let server_secret = hash.derive_secret(&handshake_secret, b"s hs traffic", &transcript_hash);
+        let client_secret =
+            hash.derive_secret(&handshake_secret, b"c hs traffic", &transcript_hash);
+        let server_secret =
+            hash.derive_secret(&handshake_secret, b"s hs traffic", &transcript_hash);
         let derived = hash.derive_secret(&handshake_secret, b"derived", &empty_hash);
         let master_secret = hash.hkdf_extract(&derived, &zero);
         Self {
@@ -1359,8 +1362,7 @@ fn verify_finished(
 /// 参考：reality-main/tls.go:178, sing-box reality_client.go:214。
 fn hkdf_sha256(secret: &[u8], salt: &[u8], info: &[u8], len: usize) -> Vec<u8> {
     let prk = {
-        let mut h =
-            <HmacSha256 as Mac>::new_from_slice(salt).expect("HMAC accepts any key length");
+        let mut h = <HmacSha256 as Mac>::new_from_slice(salt).expect("HMAC accepts any key length");
         h.update(secret);
         h.finalize().into_bytes().to_vec()
     };
@@ -1368,8 +1370,7 @@ fn hkdf_sha256(secret: &[u8], salt: &[u8], info: &[u8], len: usize) -> Vec<u8> {
     let mut previous = Vec::new();
     let mut counter = 1u8;
     while okm.len() < len {
-        let mut h =
-            <HmacSha256 as Mac>::new_from_slice(&prk).expect("HMAC accepts any key length");
+        let mut h = <HmacSha256 as Mac>::new_from_slice(&prk).expect("HMAC accepts any key length");
         h.update(&previous);
         h.update(info);
         h.update(&[counter]);

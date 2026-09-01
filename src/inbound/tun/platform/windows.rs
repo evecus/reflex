@@ -1223,20 +1223,18 @@ fn remove_inbound_udp_firewall_rule() {
 /// 不排除 TUN 接口——用于 exclude 路由与默认路由变化监控；调用方需注意若 TUN
 /// 已添加 metric=0 默认路由，本函数会返回 TUN 网关（与旧 PowerShell 行为一致）。
 fn get_default_gateway_v4() -> Option<Ipv4Addr> {
-    win32_route::find_default_route(AF_INET, None)
-        .and_then(|(_, gw)| match gw {
-            IpAddr::V4(v) => Some(v),
-            _ => None,
-        })
+    win32_route::find_default_route(AF_INET, None).and_then(|(_, gw)| match gw {
+        IpAddr::V4(v) => Some(v),
+        _ => None,
+    })
 }
 
 /// 物理默认网关 IPv6（GetIpForwardTable2 原生查询，替代 Get-NetRoute PowerShell）。
 fn get_default_gateway_v6() -> Option<Ipv6Addr> {
-    win32_route::find_default_route(AF_INET6, None)
-        .and_then(|(_, gw)| match gw {
-            IpAddr::V6(v) => Some(v),
-            _ => None,
-        })
+    win32_route::find_default_route(AF_INET6, None).and_then(|(_, gw)| match gw {
+        IpAddr::V6(v) => Some(v),
+        _ => None,
+    })
 }
 
 /// 查询当前系统默认网关 (v4, v6)。默认路由变化监控用。
@@ -1392,11 +1390,10 @@ fn add_reflex_bypass(if_name: &str) -> ReflexBypass {
         })
         .and_then(|(if_idx, gw)| {
             // 探测物理接口首选源 IP
-            let src = win32_route::find_source_ip(AF_INET, if_idx)
-                .and_then(|ip| match ip {
-                    IpAddr::V4(v) => Some(v),
-                    _ => None,
-                })?;
+            let src = win32_route::find_source_ip(AF_INET, if_idx).and_then(|ip| match ip {
+                IpAddr::V4(v) => Some(v),
+                _ => None,
+            })?;
             Some((if_idx, gw, src))
         });
 
@@ -1433,11 +1430,10 @@ fn add_reflex_bypass(if_name: &str) -> ReflexBypass {
             _ => None,
         })
         .and_then(|(if_idx, gw)| {
-            let src = win32_route::find_source_ip(AF_INET6, if_idx)
-                .and_then(|ip| match ip {
-                    IpAddr::V6(v) => Some(v),
-                    _ => None,
-                })?;
+            let src = win32_route::find_source_ip(AF_INET6, if_idx).and_then(|ip| match ip {
+                IpAddr::V6(v) => Some(v),
+                _ => None,
+            })?;
             Some((if_idx, gw, src))
         });
 
@@ -1980,11 +1976,10 @@ fn remove_reflex_bypass(if_name: &str) {
             _ => None,
         })
         .and_then(|(if_idx, gw)| {
-            let src = win32_route::find_source_ip(AF_INET, if_idx)
-                .and_then(|ip| match ip {
-                    IpAddr::V4(v) => Some(v),
-                    _ => None,
-                })?;
+            let src = win32_route::find_source_ip(AF_INET, if_idx).and_then(|ip| match ip {
+                IpAddr::V4(v) => Some(v),
+                _ => None,
+            })?;
             Some((if_idx, gw, src))
         });
 
@@ -2011,11 +2006,10 @@ fn remove_reflex_bypass(if_name: &str) {
             _ => None,
         })
         .and_then(|(if_idx, gw)| {
-            let src = win32_route::find_source_ip(AF_INET6, if_idx)
-                .and_then(|ip| match ip {
-                    IpAddr::V6(v) => Some(v),
-                    _ => None,
-                })?;
+            let src = win32_route::find_source_ip(AF_INET6, if_idx).and_then(|ip| match ip {
+                IpAddr::V6(v) => Some(v),
+                _ => None,
+            })?;
             Some((if_idx, gw, src))
         });
 
@@ -2086,13 +2080,12 @@ pub fn teardown(cfg: &TunInboundConfig, if_name: &str, state: &SetupState) -> an
             None => (entry.as_str(), None),
         };
         let gw = recorded_gw.or(gw_phys_v4_fallback);
-        let win32_ok = if let (Some(l), Some(gw), Some((dest, pl))) =
-            (if_luid, gw, parse_cidr_v4(cidr))
-        {
-            win32_route::delete_route_v4(Some(l), if_index, dest, pl, gw).is_ok()
-        } else {
-            false
-        };
+        let win32_ok =
+            if let (Some(l), Some(gw), Some((dest, pl))) = (if_luid, gw, parse_cidr_v4(cidr)) {
+                win32_route::delete_route_v4(Some(l), if_index, dest, pl, gw).is_ok()
+            } else {
+                false
+            };
         if !win32_ok {
             Command::new("netsh")
                 .args(["interface", "ipv4", "delete", "route", cidr, if_name])
@@ -2106,13 +2099,12 @@ pub fn teardown(cfg: &TunInboundConfig, if_name: &str, state: &SetupState) -> an
             None => (entry.as_str(), None),
         };
         let gw = recorded_gw.or(gw_phys_v6_fallback);
-        let win32_ok = if let (Some(l), Some(gw), Some((dest, pl))) =
-            (if_luid, gw, parse_cidr_v6(cidr))
-        {
-            win32_route::delete_route_v6(Some(l), if_index, dest, pl, gw).is_ok()
-        } else {
-            false
-        };
+        let win32_ok =
+            if let (Some(l), Some(gw), Some((dest, pl))) = (if_luid, gw, parse_cidr_v6(cidr)) {
+                win32_route::delete_route_v6(Some(l), if_index, dest, pl, gw).is_ok()
+            } else {
+                false
+            };
         if !win32_ok {
             Command::new("netsh")
                 .args(["interface", "ipv6", "delete", "route", cidr, if_name])

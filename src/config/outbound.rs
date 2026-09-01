@@ -1749,9 +1749,7 @@ impl HttpOutboundConfig {
                 // 与官方一致：只取第一个值作为 Host。
                 host = Some(match v {
                     HttpHeaderValue::Single(s) => s.clone(),
-                    HttpHeaderValue::Multiple(list) => {
-                        list.first().cloned().unwrap_or_default()
-                    }
+                    HttpHeaderValue::Multiple(list) => list.first().cloned().unwrap_or_default(),
                 });
                 continue;
             }

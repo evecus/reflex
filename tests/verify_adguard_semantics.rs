@@ -66,7 +66,9 @@ fn verify_suffix_no_end() {
     check("||example.org", "example.org", true);
     check("||example.org", "www.example.org", true);
     // ||无^ 已知差异：sing 期望 example.org.cn 匹配，reflex 标准子域不匹配
-    println!("  [KNOWN] ||example.org 无^：reflex 标准子域不匹配 example.org.cn（sing 需要任意后缀）");
+    println!(
+        "  [KNOWN] ||example.org 无^：reflex 标准子域不匹配 example.org.cn（sing 需要任意后缀）"
+    );
 }
 
 #[test]
@@ -96,8 +98,14 @@ fn verify_exception_rule_blocks_nothing() {
     // @@ 例外：被例外的域名不应被同规则集中的其他规则命中
     let r = rs("@@||allow.com^\n||block.com^\n||allow.com^");
     // allow.com 在 suffix 里，但同时被 @@ 排除 → 应不匹配
-    assert!(!r.matches(&MatchTarget::Domain("allow.com")), "excluded domain should NOT match");
-    assert!(!r.matches(&MatchTarget::Domain("sub.allow.com")), "excluded subdomain should NOT match");
+    assert!(
+        !r.matches(&MatchTarget::Domain("allow.com")),
+        "excluded domain should NOT match"
+    );
+    assert!(
+        !r.matches(&MatchTarget::Domain("sub.allow.com")),
+        "excluded subdomain should NOT match"
+    );
     // block.com 不受 @@ 影响 → 应匹配
     assert!(r.matches(&MatchTarget::Domain("block.com")));
     assert!(r.matches(&MatchTarget::Domain("www.block.com")));

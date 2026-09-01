@@ -167,16 +167,32 @@ pub enum RouteActionConfig {
         #[serde(default, skip_serializing_if = "is_false")]
         override_destination: bool,
         /// 启用的嗅探协议列表（如 `["tls", "http", "quic"]`）
-        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "super::deserialize_one_or_many")]
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            deserialize_with = "super::deserialize_one_or_many"
+        )]
         sniff_type: Vec<String>,
         /// 嗅探白名单（仅这些域名才嗅探）
-        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "super::deserialize_one_or_many")]
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            deserialize_with = "super::deserialize_one_or_many"
+        )]
         force_domain: Vec<String>,
         /// 嗅探黑名单（跳过这些域名）
-        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "super::deserialize_one_or_many")]
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            deserialize_with = "super::deserialize_one_or_many"
+        )]
         skip_domain: Vec<String>,
         /// 嗅探源 IP 黑名单（跳过这些 CIDR）
-        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "super::deserialize_one_or_many")]
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            deserialize_with = "super::deserialize_one_or_many"
+        )]
         skip_src_address: Vec<String>,
     },
     /// 非最终动作：将域名解析为 IP 后**继续**匹配后续规则。
@@ -361,7 +377,10 @@ impl RouteRuleConfig {
     /// 是否为拒绝/阻断规则（`action: "reject"` / `"block"`）。
     pub fn is_reject_rule(&self) -> bool {
         self.action_is(|a| {
-            matches!(a, RouteActionConfig::Reject { .. } | RouteActionConfig::Block)
+            matches!(
+                a,
+                RouteActionConfig::Reject { .. } | RouteActionConfig::Block
+            )
         })
     }
 
@@ -474,7 +493,12 @@ const ROUTE_COMMON_FIELDS: &[&str] = &[
 /// 各 action 允许的参数（除条件字段外）。
 fn route_action_params(action: &str) -> &'static [&'static str] {
     match action {
-        "route" => &["outbound", "override_address", "override_port", "udp_timeout"],
+        "route" => &[
+            "outbound",
+            "override_address",
+            "override_port",
+            "udp_timeout",
+        ],
         "reject" => &["method"],
         "block" => &[],
         "hijack-dns" => &[],
@@ -494,7 +518,10 @@ fn route_action_params(action: &str) -> &'static [&'static str] {
 /// 校验规则对象的字段归属：条件字段或当前 action 的参数，其余报错。
 /// 由此实现「动作参数严格归属」：`action: "route"` 不能带 sniff/resolve 参数，
 /// `action: "sniff"` 不能带 outbound 等。
-fn validate_route_action_fields(action: &str, obj: &serde_json::Map<String, serde_json::Value>) -> anyhow::Result<()> {
+fn validate_route_action_fields(
+    action: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> anyhow::Result<()> {
     let params = route_action_params(action);
     for key in obj.keys() {
         if !ROUTE_COMMON_FIELDS.contains(&key.as_str()) && !params.contains(&key.as_str()) {
@@ -545,7 +572,10 @@ impl RouteRuleConfig {
                         .get("override_address")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
-                    override_port: obj.get("override_port").and_then(|v| v.as_u64()).map(|p| p as u16),
+                    override_port: obj
+                        .get("override_port")
+                        .and_then(|v| v.as_u64())
+                        .map(|p| p as u16),
                     udp_timeout: obj.get("udp_timeout").and_then(|v| v.as_u64()),
                 }
             }
@@ -1525,9 +1555,18 @@ mod tests {
         }
         // 序列化输出规范形式：包含 action tag，不再有旧式动作字段
         let rule_json = &s;
-        assert!(rule_json.contains("\"action\":\"route\"") || rule_json.contains("\"action\": \"route\""));
-        assert!(rule_json.contains("\"action\":\"reject\"") || rule_json.contains("\"action\": \"reject\""));
-        assert!(rule_json.contains("\"action\":\"block\"") || rule_json.contains("\"action\": \"block\""));
+        assert!(
+            rule_json.contains("\"action\":\"route\"")
+                || rule_json.contains("\"action\": \"route\"")
+        );
+        assert!(
+            rule_json.contains("\"action\":\"reject\"")
+                || rule_json.contains("\"action\": \"reject\"")
+        );
+        assert!(
+            rule_json.contains("\"action\":\"block\"")
+                || rule_json.contains("\"action\": \"block\"")
+        );
     }
 
     #[test]

@@ -159,8 +159,7 @@ impl LoadedRuleSet {
             ipv6_cidrs: compiled.ipv6_cidrs,
             ports: compiled.ports,
             exclude_domain_fst: build_domain_fst(&compiled.exclude_domains)?.into(),
-            exclude_domain_suffix_fst: build_suffix_fst(&compiled.exclude_domain_suffixes)?
-                .into(),
+            exclude_domain_suffix_fst: build_suffix_fst(&compiled.exclude_domain_suffixes)?.into(),
             exclude_domain_regexes: compiled.exclude_domain_regexes,
         })
     }
@@ -207,8 +206,12 @@ impl LoadedRuleSet {
                 SectionType::ExcludeDomainRegex => {
                     out.exclude_domain_regexes = decode_strings(sec_bytes, s.entry_count)?
                 }
-                SectionType::IpCidrV4 => out.ipv4_cidrs = decode_ipv4_cidrs(sec_bytes, s.entry_count)?,
-                SectionType::IpCidrV6 => out.ipv6_cidrs = decode_ipv6_cidrs(sec_bytes, s.entry_count)?,
+                SectionType::IpCidrV4 => {
+                    out.ipv4_cidrs = decode_ipv4_cidrs(sec_bytes, s.entry_count)?
+                }
+                SectionType::IpCidrV6 => {
+                    out.ipv6_cidrs = decode_ipv6_cidrs(sec_bytes, s.entry_count)?
+                }
                 SectionType::Port => out.ports = decode_ports(sec_bytes, s.entry_count)?,
             }
         }
@@ -452,7 +455,10 @@ mod tests {
         let loaded_mem = LoadedRuleSet::from_bytes(&buf).unwrap();
 
         // FST 字节内容一致（mmap 切片 == 拷贝字节）
-        assert_eq!(loaded_mmap.domain_fst.as_ref(), loaded_mem.domain_fst.as_ref());
+        assert_eq!(
+            loaded_mmap.domain_fst.as_ref(),
+            loaded_mem.domain_fst.as_ref()
+        );
         assert_eq!(
             loaded_mmap.domain_suffix_fst.as_ref(),
             loaded_mem.domain_suffix_fst.as_ref()
@@ -495,7 +501,10 @@ mod tests {
             loaded_direct.domain_suffix_fst.as_ref(),
             loaded_roundtrip.domain_suffix_fst.as_ref()
         );
-        assert_eq!(loaded_direct.domain_keywords, loaded_roundtrip.domain_keywords);
+        assert_eq!(
+            loaded_direct.domain_keywords,
+            loaded_roundtrip.domain_keywords
+        );
         assert_eq!(loaded_direct.ipv4_cidrs, loaded_roundtrip.ipv4_cidrs);
     }
 }

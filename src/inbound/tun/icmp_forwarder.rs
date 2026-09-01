@@ -200,7 +200,8 @@ impl<W: AsyncWriteExt + Unpin + Send + 'static> IcmpForwarder<W> {
         let (Some(router), Some(outbound_mgr)) = (&self.router, &self.outbound_mgr) else {
             return false;
         };
-        let (action, _, _, _) = router.route_icmp(&self.inbound_tag, Some(IpAddr::V4(src)), IpAddr::V4(dst));
+        let (action, _, _, _) =
+            router.route_icmp(&self.inbound_tag, Some(IpAddr::V4(src)), IpAddr::V4(dst));
         match action {
             RouteAction::Outbound(tag) => {
                 if Self::outbound_supports_icmp(outbound_mgr, tag) {
@@ -217,7 +218,9 @@ impl<W: AsyncWriteExt + Unpin + Send + 'static> IcmpForwarder<W> {
             }
             RouteAction::Reject { method } => match method {
                 crate::config::route::RejectMethod::Default => {
-                    if let Some(pkt) = build_icmpv4_dst_unreachable(raw, ihl, ICMPV4_CODE_HOST_UNREACHABLE) {
+                    if let Some(pkt) =
+                        build_icmpv4_dst_unreachable(raw, ihl, ICMPV4_CODE_HOST_UNREACHABLE)
+                    {
                         tun_write(&self.tun_writer, &pkt, false).await;
                     }
                     true
@@ -242,7 +245,8 @@ impl<W: AsyncWriteExt + Unpin + Send + 'static> IcmpForwarder<W> {
         let (Some(router), Some(outbound_mgr)) = (&self.router, &self.outbound_mgr) else {
             return false;
         };
-        let (action, _, _, _) = router.route_icmp(&self.inbound_tag, Some(IpAddr::V6(src)), IpAddr::V6(dst));
+        let (action, _, _, _) =
+            router.route_icmp(&self.inbound_tag, Some(IpAddr::V6(src)), IpAddr::V6(dst));
         match action {
             RouteAction::Outbound(tag) => {
                 if Self::outbound_supports_icmp(outbound_mgr, tag) {
@@ -259,7 +263,9 @@ impl<W: AsyncWriteExt + Unpin + Send + 'static> IcmpForwarder<W> {
             }
             RouteAction::Reject { method } => match method {
                 crate::config::route::RejectMethod::Default => {
-                    if let Some(pkt) = build_icmpv6_dst_unreachable(raw, ICMPV6_CODE_ADDR_UNREACHABLE) {
+                    if let Some(pkt) =
+                        build_icmpv6_dst_unreachable(raw, ICMPV6_CODE_ADDR_UNREACHABLE)
+                    {
                         tun_write(&self.tun_writer, &pkt, true).await;
                     }
                     true
@@ -644,7 +650,11 @@ fn build_echo_reply_v6(template: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// 构造 IPv4 Echo Reply（用于上游回复回写：以上游 ICMP payload 替换原包 payload）。
-fn build_echo_reply_v4_from_upstream(template: &[u8], key: FlowKey, reply_payload: &[u8]) -> Option<Vec<u8>> {
+fn build_echo_reply_v4_from_upstream(
+    template: &[u8],
+    key: FlowKey,
+    reply_payload: &[u8],
+) -> Option<Vec<u8>> {
     if template.len() < 20 || reply_payload.is_empty() {
         return None;
     }
@@ -679,7 +689,11 @@ fn build_echo_reply_v4_from_upstream(template: &[u8], key: FlowKey, reply_payloa
 }
 
 /// 构造 IPv6 Echo Reply（用于上游回复回写）。
-fn build_echo_reply_v6_from_upstream(template: &[u8], key: FlowKey, reply_payload: &[u8]) -> Option<Vec<u8>> {
+fn build_echo_reply_v6_from_upstream(
+    template: &[u8],
+    key: FlowKey,
+    reply_payload: &[u8],
+) -> Option<Vec<u8>> {
     if template.len() < 40 || reply_payload.is_empty() {
         return None;
     }
@@ -752,7 +766,7 @@ fn build_icmpv6_dst_unreachable(orig: &[u8], code: u8) -> Option<Vec<u8>> {
     pkt[7] = SYNTHESIZED_TTL;
     pkt[8..24].copy_from_slice(&orig[24..40]); // src = 原 dst
     pkt[24..40].copy_from_slice(&orig[8..24]); // dst = 原 src
-    // ICMPv6：type=1 (DstUnreachable), code=传入值，unused=0
+                                               // ICMPv6：type=1 (DstUnreachable), code=传入值，unused=0
     pkt[40] = ICMPV6_DST_UNREACHABLE;
     pkt[41] = code;
     pkt[48..48 + payload_len].copy_from_slice(&orig[..payload_len]);

@@ -1063,10 +1063,7 @@ pub async fn setup(cfg: &TunInboundConfig, if_name: &str) -> anyhow::Result<Setu
             "0.0.0.0/32".to_string(),
         ];
         args.extend(fwmark_not.iter().cloned());
-        args.extend([
-            "lookup".to_string(),
-            table.to_string(),
-        ]);
+        args.extend(["lookup".to_string(), table.to_string()]);
         ip_owned(&args).await;
         state.rule_priorities.push(p4);
         p4 += 1;

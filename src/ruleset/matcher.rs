@@ -482,16 +482,18 @@ impl RuleSet {
             let exact = if loaded.exclude_domain_fst.is_empty() {
                 None
             } else {
-                Some(Set::new(loaded.exclude_domain_fst).map_err(|e| {
-                    RuleSetError::LoadedInvalidRegex(e.to_string())
-                })?)
+                Some(
+                    Set::new(loaded.exclude_domain_fst)
+                        .map_err(|e| RuleSetError::LoadedInvalidRegex(e.to_string()))?,
+                )
             };
             let suffix = if loaded.exclude_domain_suffix_fst.is_empty() {
                 None
             } else {
-                Some(Set::new(loaded.exclude_domain_suffix_fst).map_err(|e| {
-                    RuleSetError::LoadedInvalidRegex(e.to_string())
-                })?)
+                Some(
+                    Set::new(loaded.exclude_domain_suffix_fst)
+                        .map_err(|e| RuleSetError::LoadedInvalidRegex(e.to_string()))?,
+                )
             };
             DomainMatcher::Fst { exact, suffix }
         } else {

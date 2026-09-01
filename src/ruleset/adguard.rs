@@ -252,8 +252,8 @@ fn is_raw_domain_line(line: &str) -> bool {
     // 排除快速失败：含空格 / $ / | / ^ / * / / / : 的肯定不是裸域名
     for ch in line.chars() {
         match ch {
-            ' ' | '$' | '|' | '^' | '*' | '/' | ':' | '!' | '#' | '?' | '&'
-            | '[' | ']' | '(' | ')' | '~' | '@' => return false,
+            ' ' | '$' | '|' | '^' | '*' | '/' | ':' | '!' | '#' | '?' | '&' | '[' | ']' | '('
+            | ')' | '~' | '@' => return false,
             _ => {}
         }
     }
@@ -523,10 +523,9 @@ mod tests {
 
     #[test]
     fn exception_rule_preserved() {
-        let report = CompiledRuleSet::from_adguard_text(
-            "@@||allow.com^\n@@|exact.io^\n||block.com^\n",
-        )
-        .unwrap();
+        let report =
+            CompiledRuleSet::from_adguard_text("@@||allow.com^\n@@|exact.io^\n||block.com^\n")
+                .unwrap();
         // @@||xxx^ → exclude_suffix
         assert!(report
             .ruleset
@@ -668,7 +667,7 @@ example.com
         let report = CompiledRuleSet::from_adguard_text(sample).unwrap();
         assert_eq!(report.total_lines, 11);
         assert_eq!(report.ignored_lines, 2); // /path, ##banner（@@ 不再被跳过）
-        // hosts → exact
+                                             // hosts → exact
         assert!(report
             .ruleset
             .domains

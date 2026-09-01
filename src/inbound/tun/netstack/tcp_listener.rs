@@ -12,10 +12,10 @@ use smoltcp::{
 use std::{
     collections::HashMap,
     net::SocketAddr,
-sync::{
-atomic::{AtomicBool, AtomicUsize, Ordering},
-Arc,
-},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tokio::sync::mpsc;

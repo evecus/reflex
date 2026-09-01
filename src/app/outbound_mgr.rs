@@ -160,8 +160,8 @@ impl OutboundManager {
                 }
 
                 OutboundConfig::Hysteria2(c) => {
-                    let ob =
-                        crate::outbound::hysteria2::Hysteria2Outbound::new(c.clone())?.with_mark(routing_mark);
+                    let ob = crate::outbound::hysteria2::Hysteria2Outbound::new(c.clone())?
+                        .with_mark(routing_mark);
                     Arc::new(if let Some(ref r) = resolver {
                         ob.with_resolver(r.clone())
                     } else {

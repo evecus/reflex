@@ -428,10 +428,7 @@ impl XhttpShared {
         // Xray xhttp 默认 SeqPlacement = PlacementPath，seq 追加到 session_id 之后。
         // 格式：{base_url}{session_id}/{seq}?{query}
         match &self.session_id {
-            Some(sid) => append_query(
-                &format!("{}{}/{}", self.base_url, sid, seq),
-                &self.query,
-            ),
+            Some(sid) => append_query(&format!("{}{}/{}", self.base_url, sid, seq), &self.query),
             None => append_query(&self.base_url, &self.query),
         }
     }
@@ -1005,9 +1002,7 @@ fn chrome_user_agent() -> String {
 /// 包含一个 GREASE 无效品牌 + Chromium + Google Chrome。
 fn sec_chua_value() -> String {
     let ver = chrome_major_version();
-    format!(
-        "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"{ver}\", \"Google Chrome\";v=\"{ver}\""
-    )
+    format!("\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"{ver}\", \"Google Chrome\";v=\"{ver}\"")
 }
 
 /// 注入浏览器伪装头，与 Xray `TryDefaultHeadersWith(header, "fetch")` +
@@ -1028,15 +1023,24 @@ fn apply_default_masquerade(req: &mut Request<XhttpBody>) {
 
     let h = req.headers_mut();
     // ── chrome masquerade（覆盖）──
-    h.insert("user-agent", HeaderValue::from_str(&chrome_user_agent()).unwrap());
+    h.insert(
+        "user-agent",
+        HeaderValue::from_str(&chrome_user_agent()).unwrap(),
+    );
     h.insert(
         "sec-ch-ua",
         HeaderValue::from_str(&sec_chua_value()).unwrap(),
     );
     h.insert("sec-ch-ua-mobile", HeaderValue::from_static("?0"));
-    h.insert("sec-ch-ua-platform", HeaderValue::from_static("\"Windows\""));
+    h.insert(
+        "sec-ch-ua-platform",
+        HeaderValue::from_static("\"Windows\""),
+    );
     h.insert("dnt", HeaderValue::from_static("1"));
-    h.insert("accept-language", HeaderValue::from_static("en-US,en;q=0.9"));
+    h.insert(
+        "accept-language",
+        HeaderValue::from_static("en-US,en;q=0.9"),
+    );
 
     // ── fetch variant ──
     // Sec-Fetch-* 覆盖（与 Xray header.Set 一致）
@@ -1128,8 +1132,14 @@ mod tests {
     #[test]
     fn test_split_path_query() {
         // 无 query
-        assert_eq!(split_path_query("/ws/"), ("/ws/".to_string(), "".to_string()));
-        assert_eq!(split_path_query("/ws"), ("/ws/".to_string(), "".to_string()));
+        assert_eq!(
+            split_path_query("/ws/"),
+            ("/ws/".to_string(), "".to_string())
+        );
+        assert_eq!(
+            split_path_query("/ws"),
+            ("/ws/".to_string(), "".to_string())
+        );
         // 有 query
         assert_eq!(
             split_path_query("/ws?token=abc"),
@@ -1141,7 +1151,10 @@ mod tests {
         );
         // 空路径
         assert_eq!(split_path_query(""), ("/".to_string(), "".to_string()));
-        assert_eq!(split_path_query("?q=1"), ("/".to_string(), "q=1".to_string()));
+        assert_eq!(
+            split_path_query("?q=1"),
+            ("/".to_string(), "q=1".to_string())
+        );
     }
 
     #[test]

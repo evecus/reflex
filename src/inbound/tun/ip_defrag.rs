@@ -278,15 +278,12 @@ impl IpDefragmenter {
         // GC：超时 / 超量回收（与 v4 共用限制）
         self.gc(now);
 
-        let entry = self
-            .v6_entries
-            .entry(key)
-            .or_insert_with(|| FragmentEntry {
-                frags: std::collections::BTreeMap::new(),
-                total_len: None,
-                header: Vec::new(),
-                created: now,
-            });
+        let entry = self.v6_entries.entry(key).or_insert_with(|| FragmentEntry {
+            frags: std::collections::BTreeMap::new(),
+            total_len: None,
+            header: Vec::new(),
+            created: now,
+        });
         // 头部模板仅取首片（R4 同语义）：不可分片部分（固定头 +
         // 前置扩展头），并把指向 fragment 头的 Next Header 修正为
         // fragment 头的 Next Header。尚未收到首片时 header 为空。
@@ -384,9 +381,7 @@ mod tests {
         let p1 = vec![0xa5u8; 16];
         let p2 = vec![0x5a; 8];
         // 乱序：先喂末片（offset=16，载荷 8 字节），应仍为 None
-        assert!(d
-            .feed(&build_fragment(7, 2, false, &p2[..]), now)
-            .is_none());
+        assert!(d.feed(&build_fragment(7, 2, false, &p2[..]), now).is_none());
         // 再喂首片（offset=0，载荷 16 字节，MF=1），重组完成
         let done = d.feed(&build_fragment(7, 0, true, &p1[..]), now).unwrap();
         assert_eq!(done.len(), 20 + 16 + 8);
@@ -425,8 +420,7 @@ mod tests {
         pkt[6] = IPV6_NH_FRAGMENT; // 固定头 NH → fragment
         pkt[7] = 64;
         pkt[8..24].copy_from_slice(&[0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        pkt[24..40]
-            .copy_from_slice(&[0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        pkt[24..40].copy_from_slice(&[0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
         // fragment 头
         pkt[40] = nh;
         let mut off_more = offset_units << 3;

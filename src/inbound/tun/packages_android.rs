@@ -433,15 +433,13 @@ fn abx_to_xml(payload: &[u8]) -> anyhow::Result<String> {
                 out.push_str(">\n");
             }
             // TEXT 及其余 token（COMMENT/CDATA 等）按类型跳过操作数
-            _ => {
-                match ty {
-                    ABX_TYPE_STRING => {
-                        r.read_utf()?;
-                    }
-                    ABX_TYPE_NULL => {}
-                    _ => anyhow::bail!("ABX unexpected token {token} with type {ty:#04x}"),
+            _ => match ty {
+                ABX_TYPE_STRING => {
+                    r.read_utf()?;
                 }
-            }
+                ABX_TYPE_NULL => {}
+                _ => anyhow::bail!("ABX unexpected token {token} with type {ty:#04x}"),
+            },
         }
     }
 
@@ -534,7 +532,10 @@ mod tests {
     #[test]
     fn test_extract_tag_attr_hex() {
         let line = r#"<package name="a" userId="0x279B" />"#;
-        assert_eq!(extract_tag_attr_u32(line, "package", "userId"), Some(0x279B));
+        assert_eq!(
+            extract_tag_attr_u32(line, "package", "userId"),
+            Some(0x279B)
+        );
     }
 
     /// 构造一个最小 ABX 文档（对齐 AOSP BinaryXmlSerializer 线格式）：
@@ -592,7 +593,13 @@ mod tests {
         let mut shared_map = HashMap::new();
         let mut pid_map = HashMap::new();
         let mut sid_map = HashMap::new();
-        parse_packages_xml(&xml, &mut id_map, &mut shared_map, &mut pid_map, &mut sid_map);
+        parse_packages_xml(
+            &xml,
+            &mut id_map,
+            &mut shared_map,
+            &mut pid_map,
+            &mut sid_map,
+        );
         assert_eq!(id_map.get("com.example"), Some(&10123));
         assert_eq!(pid_map.get(&10123), Some(&"com.example".to_string()));
     }

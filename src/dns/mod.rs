@@ -348,7 +348,10 @@ impl DnsResolver {
                 global_dns_indices.push(idx);
             } else {
                 for tag in &r.inbound_tags {
-                    dns_inbound_buckets.entry(tag.clone()).or_default().push(idx);
+                    dns_inbound_buckets
+                        .entry(tag.clone())
+                        .or_default()
+                        .push(idx);
                 }
             }
         }
@@ -535,7 +538,7 @@ impl DnsResolver {
         // Prefer 策略下两条记录都查，规则匹配只走一次（A 路径）。
         let qtype = match self.strategy {
             ResolveStrategy::Ipv6Only => 28, // AAAA
-            _ => 1,                         // A
+            _ => 1,                          // A
         };
         let upstreams = self.select_resolve_upstreams(host, qtype);
         self.resolve_domain_all_with_cache(host, &upstreams, self.strategy)
@@ -873,7 +876,10 @@ impl DnsResolver {
                 self.resolve_domain_with_options(host, &tags, strategy, cfg.disable_cache)
                     .await
             }
-            None => self.resolve_domain_for_outbound(host, self_outbound_tag).await,
+            None => {
+                self.resolve_domain_for_outbound(host, self_outbound_tag)
+                    .await
+            }
         }
     }
 
@@ -1154,17 +1160,19 @@ impl DnsResolver {
             per_rule_strategy,
             rewrite_ttl,
             per_rule_client_subnet,
-        ) = matched.map(|r| {
-            (
-                r.upstreams.clone(),
-                r.disable_cache,
-                r.block,
-                r.predefined,
-                r.strategy,
-                r.rewrite_ttl,
-                r.client_subnet,
-            )
-        }).unwrap_or_else(|| (self.default.clone(), false, None, None, None, None, None));
+        ) = matched
+            .map(|r| {
+                (
+                    r.upstreams.clone(),
+                    r.disable_cache,
+                    r.block,
+                    r.predefined,
+                    r.strategy,
+                    r.rewrite_ttl,
+                    r.client_subnet,
+                )
+            })
+            .unwrap_or_else(|| (self.default.clone(), false, None, None, None, None, None));
 
         // ── 应用 strategy 拒绝规则（对齐 sing-box client.go:117） ─────────────
         // strategy=Ipv6Only + A 查询     → 返回空 NOERROR（拒绝 A）
@@ -1201,9 +1209,7 @@ impl DnsResolver {
                 crate::config::dns::RcodeAction::Refused => Ok(make_refused(&msg)),
                 crate::config::dns::RcodeAction::Success => Ok(make_noerror_empty(&msg)),
                 crate::config::dns::RcodeAction::NxDomain => Ok(make_nxdomain(&msg)),
-                crate::config::dns::RcodeAction::Drop => {
-                    Err(anyhow::Error::from(DnsDropError))
-                }
+                crate::config::dns::RcodeAction::Drop => Err(anyhow::Error::from(DnsDropError)),
             };
         }
 
@@ -1217,9 +1223,7 @@ impl DnsResolver {
                 crate::config::dns::RcodeAction::Success => Ok(make_noerror_empty(&msg)),
                 crate::config::dns::RcodeAction::NxDomain => Ok(make_nxdomain(&msg)),
                 // predefined drop 与 block drop 等价：静默丢弃查询。
-                crate::config::dns::RcodeAction::Drop => {
-                    Err(anyhow::Error::from(DnsDropError))
-                }
+                crate::config::dns::RcodeAction::Drop => Err(anyhow::Error::from(DnsDropError)),
             };
         }
 
@@ -1278,8 +1282,7 @@ impl DnsResolver {
                                     Ok(resp) => {
                                         // 对齐 sing-box client.go:307-319：rewrite_ttl 设定时
                                         // 重写 RR TTL 并以此作为缓存 TTL；否则取 min/SOA TTL。
-                                        let (resp, ttl) =
-                                            finalize_resp_ttl(resp, rewrite_ttl2);
+                                        let (resp, ttl) = finalize_resp_ttl(resp, rewrite_ttl2);
                                         if is_cacheable_or_negative(&resp) {
                                             cache2.set(
                                                 &transport_tag2,
@@ -1346,8 +1349,7 @@ impl DnsResolver {
                 }
                 InflightResult::Leader => {
                     // 本请求作为 leader，查询上游，然后广播结果
-                    let resp =
-                        race_upstreams(&upstreams, &msg, per_rule_client_subnet).await;
+                    let resp = race_upstreams(&upstreams, &msg, per_rule_client_subnet).await;
                     match resp {
                         Ok(resp) => {
                             // 对齐 sing-box client.go:307-319：rewrite_ttl 设定时
@@ -1988,11 +1990,11 @@ mod tests {
         // 追加 OPT RR：NAME=root, TYPE=41, CLASS=4096(UDPsize), TTL=0x00000080(DO),
         // RDLENGTH=0
         resp.extend_from_slice(&[
-            0x00,             // NAME: root
-            0x00, 0x29,       // TYPE: OPT (41)
-            0x10, 0x00,       // CLASS: UDP payload size 4096
+            0x00, // NAME: root
+            0x00, 0x29, // TYPE: OPT (41)
+            0x10, 0x00, // CLASS: UDP payload size 4096
             0x00, 0x00, 0x00, 0x80, // "TTL": ext-rcode=0, version=0, flags=0x80 (DO bit)
-            0x00, 0x00,       // RDLENGTH: 0
+            0x00, 0x00, // RDLENGTH: 0
         ]);
 
         // 直接搜索 OPT "TTL" 字节序列（00 00 00 80）定位，避免手算偏移易错。

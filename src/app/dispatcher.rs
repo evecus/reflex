@@ -283,8 +283,7 @@ impl Dispatcher {
                 // TCP 53 兜底检测（只做一次）：目标是 53 且协议未识别时，轻量
                 // 识别 DNS。命中则让后续 hijack_dns 规则可以匹配（用户可能没配
                 // sniff 规则但配了 hijack_dns + protocol=["dns"]）。
-                if !dns_probe_done && conn.target.port() == 53 && conn.sniffed_protocol.is_none()
-                {
+                if !dns_probe_done && conn.target.port() == 53 && conn.sniffed_protocol.is_none() {
                     dns_probe_done = true;
                     let dns_only = vec![crate::app::sniff::SniffType::Dns];
                     if let Some(result) = sniff(&mut conn.stream, 0, &dns_only).await {
@@ -316,115 +315,116 @@ impl Dispatcher {
                         let action_ref = action.clone();
                         match &action_ref {
                             RouteAction::Sniff {
-                        timeout_ms,
-                        override_destination,
-                        sniff_types,
-                        force_domain,
-                        skip_domain,
-                        skip_src_address,
-                    } => {
-                        // 嗅探过滤器：根据 force_domain / skip_domain /
-                        // skip_src_address 决定是否对当前连接执行嗅探。被过滤掉的
-                        // 连接直接进入下一阶段路由（与未命中 sniff 规则一致）。
-                        let filter = crate::app::sniff::SniffFilter::from_config(
-                            force_domain.clone(),
-                            skip_domain.clone(),
-                            skip_src_address.clone(),
-                        );
-                        let target_host = match &conn.target {
-                            Target::Domain(h, _) => Some(h.as_str()),
-                            Target::Socket(_) => None,
-                        };
-                        let src_ip = conn.stream.peer_addr().ok().map(|a| a.ip());
-                        // 服务器先开口协议端口（SMTP/IMAP/POP3）跳过嗅探，
-                        // 对齐 sing-box common/sniff/sniff.go:25-39 的 `Skip`：
-                        // 客户端侧无首包可读，嗅探会阻塞到超时。
-                        let should_sniff = !is_server_first_port(conn.target.port())
-                            && filter.should_sniff(target_host, src_ip);
+                                timeout_ms,
+                                override_destination,
+                                sniff_types,
+                                force_domain,
+                                skip_domain,
+                                skip_src_address,
+                            } => {
+                                // 嗅探过滤器：根据 force_domain / skip_domain /
+                                // skip_src_address 决定是否对当前连接执行嗅探。被过滤掉的
+                                // 连接直接进入下一阶段路由（与未命中 sniff 规则一致）。
+                                let filter = crate::app::sniff::SniffFilter::from_config(
+                                    force_domain.clone(),
+                                    skip_domain.clone(),
+                                    skip_src_address.clone(),
+                                );
+                                let target_host = match &conn.target {
+                                    Target::Domain(h, _) => Some(h.as_str()),
+                                    Target::Socket(_) => None,
+                                };
+                                let src_ip = conn.stream.peer_addr().ok().map(|a| a.ip());
+                                // 服务器先开口协议端口（SMTP/IMAP/POP3）跳过嗅探，
+                                // 对齐 sing-box common/sniff/sniff.go:25-39 的 `Skip`：
+                                // 客户端侧无首包可读，嗅探会阻塞到超时。
+                                let should_sniff = !is_server_first_port(conn.target.port())
+                                    && filter.should_sniff(target_host, src_ip);
 
-                        // 嗅探：非破坏性读取头部，识别域名后按配置决定是否覆盖目标地址
-                        let sniff_result = if should_sniff {
-                            sniff(&mut conn.stream, *timeout_ms, sniff_types).await
-                        } else {
-                            debug!(
-                                target = %conn.target,
-                                "sniff skipped by filter (force_domain/skip_domain/skip_src_address)"
-                            );
-                            None
-                        };
-                        if let Some(result) = sniff_result {
-                            let port = conn.target.port();
-                            // 将协议写入 sniffed_protocol，供路由规则匹配
-                            if conn.sniffed_protocol.is_none() {
-                                conn.sniffed_protocol = Some(result.protocol.to_string());
-                            }
-                            if let Some(domain) = result.domain {
-                                if *override_destination {
-                                    debug!(
-                                        original = %conn.target,
-                                        sniffed = %domain,
-                                        protocol = result.protocol,
-                                        "sniff updated target domain"
-                                    );
-                                    conn.target = crate::inbound::Target::Domain(domain, port);
+                                // 嗅探：非破坏性读取头部，识别域名后按配置决定是否覆盖目标地址
+                                let sniff_result = if should_sniff {
+                                    sniff(&mut conn.stream, *timeout_ms, sniff_types).await
                                 } else {
                                     debug!(
-                                        original = %conn.target,
-                                        sniffed = %domain,
-                                        protocol = result.protocol,
-                                        "sniff identified domain (override_destination=false, target unchanged)"
+                                        target = %conn.target,
+                                        "sniff skipped by filter (force_domain/skip_domain/skip_src_address)"
                                     );
-                                    conn.sniffed_domain = Some(domain);
+                                    None
+                                };
+                                if let Some(result) = sniff_result {
+                                    let port = conn.target.port();
+                                    // 将协议写入 sniffed_protocol，供路由规则匹配
+                                    if conn.sniffed_protocol.is_none() {
+                                        conn.sniffed_protocol = Some(result.protocol.to_string());
+                                    }
+                                    if let Some(domain) = result.domain {
+                                        if *override_destination {
+                                            debug!(
+                                                original = %conn.target,
+                                                sniffed = %domain,
+                                                protocol = result.protocol,
+                                                "sniff updated target domain"
+                                            );
+                                            conn.target =
+                                                crate::inbound::Target::Domain(domain, port);
+                                        } else {
+                                            debug!(
+                                                original = %conn.target,
+                                                sniffed = %domain,
+                                                protocol = result.protocol,
+                                                "sniff identified domain (override_destination=false, target unchanged)"
+                                            );
+                                            conn.sniffed_domain = Some(domain);
+                                        }
+                                    } else {
+                                        debug!(
+                                            original = %conn.target,
+                                            protocol = result.protocol,
+                                            "sniff identified protocol (no domain)"
+                                        );
+                                    }
                                 }
-                            } else {
-                                debug!(
-                                    original = %conn.target,
-                                    protocol = result.protocol,
-                                    "sniff identified protocol (no domain)"
-                                );
+                                route_state.sniff_done = true;
                             }
-                        }
-                        route_state.sniff_done = true;
-                    }
-                    RouteAction::Resolve { server } => {
-                        // 处理 Resolve 动作：将域名解析为 IP，resolved_ip 作为
-                        // 新候选加入后续匹配。解析优先级：sniffed_domain → target.Domain
-                        let domain_to_resolve =
-                            conn.sniffed_domain.clone().or_else(|| match &conn.target {
-                                Target::Domain(h, _) => Some(h.clone()),
-                                Target::Socket(_) => None,
-                            });
+                            RouteAction::Resolve { server } => {
+                                // 处理 Resolve 动作：将域名解析为 IP，resolved_ip 作为
+                                // 新候选加入后续匹配。解析优先级：sniffed_domain → target.Domain
+                                let domain_to_resolve =
+                                    conn.sniffed_domain.clone().or_else(|| match &conn.target {
+                                        Target::Domain(h, _) => Some(h.clone()),
+                                        Target::Socket(_) => None,
+                                    });
 
-                        if let Some(host) = domain_to_resolve {
-                            let resolve_result = match server.as_ref() {
-                                Some(tags) => {
-                                    self.dns_resolver
-                                        .resolve_domain_via(&host, tags.as_slice())
-                                        .await
-                                }
-                                None => self.dns_resolver.resolve_domain(&host).await,
-                            };
-                            match resolve_result {
-                                Ok(ip) => {
-                                    debug!(
-                                        domain = %host,
-                                        ip = %ip,
-                                        "resolve: domain resolved, continuing routing with resolved IP as candidate"
-                                    );
-                                    resolved_ip = Some(ip);
-                                }
-                                Err(e) => {
-                                    debug!(domain = %host, err = %e, "resolve: DNS lookup failed, falling through");
+                                if let Some(host) = domain_to_resolve {
+                                    let resolve_result = match server.as_ref() {
+                                        Some(tags) => {
+                                            self.dns_resolver
+                                                .resolve_domain_via(&host, tags.as_slice())
+                                                .await
+                                        }
+                                        None => self.dns_resolver.resolve_domain(&host).await,
+                                    };
+                                    match resolve_result {
+                                        Ok(ip) => {
+                                            debug!(
+                                                domain = %host,
+                                                ip = %ip,
+                                                "resolve: domain resolved, continuing routing with resolved IP as candidate"
+                                            );
+                                            resolved_ip = Some(ip);
+                                        }
+                                        Err(e) => {
+                                            debug!(domain = %host, err = %e, "resolve: DNS lookup failed, falling through");
+                                            resolved_ip = None;
+                                        }
+                                    }
+                                } else {
+                                    // 没有域名可解析（target 是 IP 且无 sniffed_domain），直接跳过
                                     resolved_ip = None;
                                 }
+                                route_state.resolve_done = true;
                             }
-                        } else {
-                            // 没有域名可解析（target 是 IP 且无 sniffed_domain），直接跳过
-                            resolved_ip = None;
-                        }
-                        route_state.resolve_done = true;
-                    }
-                    _ => break action_ref,
+                            _ => break action_ref,
                         }
                     }
                     // 无规则命中：default 动作
@@ -1068,7 +1068,10 @@ fn reject_tcp(conn: InboundTcpStream, method: RejectMethod) {
             // 设置 linger 0 后关闭，内核会发 RST 而非 FIN，客户端立即感知拒绝。
             // 失败（平台不支持等）时忽略，退化为普通关闭。
             // 对齐 sing-box `default` → tun.ErrReset。
-            let _ = conn.stream.inner.set_linger(Some(std::time::Duration::ZERO));
+            let _ = conn
+                .stream
+                .inner
+                .set_linger(Some(std::time::Duration::ZERO));
         }
         RejectMethod::Drop => {
             // 静默关闭：不主动发 RST，对应 sing-box `drop` → tun.ErrDrop。

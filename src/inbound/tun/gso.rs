@@ -361,7 +361,10 @@ pub fn gso_split(
             if input.len() < 20 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("length of packet ({}) < minimum ipv4 header size (20)", input.len()),
+                    format!(
+                        "length of packet ({}) < minimum ipv4 header size (20)",
+                        input.len()
+                    ),
                 ));
             }
         }
@@ -378,7 +381,10 @@ pub fn gso_split(
             if input.len() < 40 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("length of packet ({}) < minimum ipv6 header size (40)", input.len()),
+                    format!(
+                        "length of packet ({}) < minimum ipv6 header size (40)",
+                        input.len()
+                    ),
                 ));
             }
         }

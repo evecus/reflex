@@ -17,7 +17,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     config::inbound::TProxyInboundConfig,
-    inbound::{display_sockaddr, InboundTcpStream, InboundUdpPacket, SniffedStream, Target, UdpSession},
+    inbound::{
+        display_sockaddr, InboundTcpStream, InboundUdpPacket, SniffedStream, Target, UdpSession,
+    },
 };
 
 pub struct TProxyInbound {
@@ -193,7 +195,10 @@ fn get_original_dst_tcp(stream: &TcpStream) -> anyhow::Result<SocketAddr> {
             get_original_dst_v6(fd).or_else(|| get_original_dst_v4(fd))
         };
         dst.ok_or_else(|| {
-            anyhow::anyhow!("SO_ORIGINAL_DST failed: {}", std::io::Error::last_os_error())
+            anyhow::anyhow!(
+                "SO_ORIGINAL_DST failed: {}",
+                std::io::Error::last_os_error()
+            )
         })
     }
 }

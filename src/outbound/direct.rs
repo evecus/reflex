@@ -398,9 +398,8 @@ impl DirectOutbound {
             .is_some_and(|s| s.eq_ignore_ascii_case("happy_eyeballs"));
 
         if use_happy_eyeballs && candidates.len() > 1 {
-            let fallback_delay = Duration::from_millis(
-                self.config.fallback_delay_ms.unwrap_or(250),
-            );
+            let fallback_delay =
+                Duration::from_millis(self.config.fallback_delay_ms.unwrap_or(250));
             debug!(
                 tag=%self.config.tag,
                 candidates=candidates.len(),
@@ -502,7 +501,11 @@ impl DirectOutbound {
         #[cfg(target_os = "windows")]
         {
             use socket2::{Domain, Protocol, Socket, Type};
-            let domain = if dst.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+            let domain = if dst.is_ipv6() {
+                Domain::IPV6
+            } else {
+                Domain::IPV4
+            };
             let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
             sock.set_reuse_address(true)?;
             // 1. IP_UNICAST_IF：钉住物理网卡，影响 egress 接口选择
@@ -804,10 +807,7 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)),
         ];
         // prefer_ipv4：v4 排前，同族内保持原顺序（稳定排序）
-        let got = DirectOutbound::apply_domain_strategy(
-            ips.clone(),
-            ResolveStrategy::PreferIpv4,
-        );
+        let got = DirectOutbound::apply_domain_strategy(ips.clone(), ResolveStrategy::PreferIpv4);
         assert_eq!(
             got,
             vec![
@@ -818,14 +818,10 @@ mod tests {
             ]
         );
         // prefer_ipv6：v6 排前
-        let got = DirectOutbound::apply_domain_strategy(
-            ips.clone(),
-            ResolveStrategy::PreferIpv6,
-        );
+        let got = DirectOutbound::apply_domain_strategy(ips.clone(), ResolveStrategy::PreferIpv6);
         assert_eq!(got[0], IpAddr::V6(Ipv6Addr::LOCALHOST));
         // ipv4_only / ipv6_only：过滤
-        let got =
-            DirectOutbound::apply_domain_strategy(ips.clone(), ResolveStrategy::Ipv4Only);
+        let got = DirectOutbound::apply_domain_strategy(ips.clone(), ResolveStrategy::Ipv4Only);
         assert!(got.iter().all(|ip| ip.is_ipv4()) && got.len() == 2);
         let got = DirectOutbound::apply_domain_strategy(ips, ResolveStrategy::Ipv6Only);
         assert!(got.iter().all(|ip| ip.is_ipv6()) && got.len() == 2);
@@ -837,20 +833,23 @@ mod tests {
     fn local_loopback_guard_rejects_own_subnet_but_allows_exact_self() {
         use std::net::Ipv4Addr;
         // 注入 192.0.2.0/24（TEST-NET-1，不会与本机/测试网络冲突）
-        local_ranges::set_for_test(vec![(
-            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)),
-            24,
-        )]);
+        local_ranges::set_for_test(vec![(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 24)]);
         // 同子网其它地址 → 拒绝
-        assert!(local_ranges::is_local_loopback(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 100))));
+        assert!(local_ranges::is_local_loopback(IpAddr::V4(Ipv4Addr::new(
+            192, 0, 2, 100
+        ))));
         // 与前缀基址完全相等的本机地址 → 非 macOS 平台豁免
-        assert!(!local_ranges::is_local_loopback(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7))));
+        assert!(!local_ranges::is_local_loopback(IpAddr::V4(Ipv4Addr::new(
+            192, 0, 2, 7
+        ))));
         // 异网段 → 放行
-        assert!(!local_ranges::is_local_loopback(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
+        assert!(!local_ranges::is_local_loopback(IpAddr::V4(Ipv4Addr::new(
+            198, 51, 100, 1
+        ))));
         // 协议族不匹配 → 放行
-        assert!(!local_ranges::is_local_loopback(
-            IpAddr::V6("2001:db8::1".parse().unwrap())
-        ));
+        assert!(!local_ranges::is_local_loopback(IpAddr::V6(
+            "2001:db8::1".parse().unwrap()
+        )));
     }
 
     #[tokio::test]

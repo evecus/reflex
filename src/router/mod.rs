@@ -667,7 +667,9 @@ impl CompiledRule {
         // ── 动作构建：action 唯一决定（反序列化后恒为 Some）───────────────
         let action = match &rule.action {
             Some(ac) => config_action_to_route(ac)?,
-            None => anyhow::bail!("route rule: missing `action` (defaults to route with required outbound)"),
+            None => anyhow::bail!(
+                "route rule: missing `action` (defaults to route with required outbound)"
+            ),
         };
 
         let rule_display = if !rule.ruleset.is_empty() {
@@ -876,18 +878,15 @@ impl CompiledRule {
                     port_val,
                 );
             let addr_rs_ok = !has_addr_rs
-                || self
-                    .addr_rs
-                    .as_ref()
-                    .is_some_and(|rs| {
-                        match_addr_rs(
-                            rs,
-                            sniffed_norm.as_deref(),
-                            target_domain_norm.as_deref(),
-                            target,
-                            resolved_ip,
-                        )
-                    });
+                || self.addr_rs.as_ref().is_some_and(|rs| {
+                    match_addr_rs(
+                        rs,
+                        sniffed_norm.as_deref(),
+                        target_domain_norm.as_deref(),
+                        target,
+                        resolved_ip,
+                    )
+                });
             let port_rs_ok = !has_port_rs
                 || self
                     .port_rs
@@ -1176,9 +1175,8 @@ fn load_ruleset_from_path(
             if file_meta.len() == 0 {
                 anyhow::bail!("rule_set '{tag}': file '{path}' is empty");
             }
-            let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| {
-                anyhow::anyhow!("rule_set '{tag}': failed to mmap '{path}': {e}")
-            })?;
+            let mmap = unsafe { memmap2::Mmap::map(&file) }
+                .map_err(|e| anyhow::anyhow!("rule_set '{tag}': failed to mmap '{path}': {e}"))?;
             let mmap = std::sync::Arc::new(mmap);
             let loaded = crate::ruleset::LoadedRuleSet::from_mmap(mmap)
                 .map_err(|e| anyhow::anyhow!("rule_set '{tag}': parse error: {e}"))?;

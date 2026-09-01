@@ -81,9 +81,7 @@ impl SplitRead {
             let payload = match packet.transport() {
                 Some((_, payload)) => payload,
                 None => {
-                    error!(
-                        "cannot locate transport header: src_ip: {src_ip}, dst_ip: {dst_ip}"
-                    );
+                    error!("cannot locate transport header: src_ip: {src_ip}, dst_ip: {dst_ip}");
                     return None;
                 }
             };

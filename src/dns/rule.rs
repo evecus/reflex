@@ -4,7 +4,9 @@ use std::sync::Arc;
 use ahash::AHashSet;
 use smallvec::SmallVec;
 
-use crate::config::dns::{DnsQueryType, DnsRuleAction, DnsRuleConfig, RcodeAction, ResolveStrategy};
+use crate::config::dns::{
+    DnsQueryType, DnsRuleAction, DnsRuleConfig, RcodeAction, ResolveStrategy,
+};
 use crate::dns::upstream::{DnsUpstream, UpstreamKind};
 use crate::ruleset::RuleSet;
 

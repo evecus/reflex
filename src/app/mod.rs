@@ -149,8 +149,7 @@ impl App {
                 // 出站也应在 connect 前绑定物理网卡（SO_MARK 在部分场景
                 // （如 ip rule 未生效、非 root 下 SO_MARK 设置失败）不是 100%
                 // 可靠；Windows/macOS 没有 SO_MARK，网卡绑定是唯一防线。
-                if !config.route.auto_detect_interface && config.route.default_interface.is_none()
-                {
+                if !config.route.auto_detect_interface && config.route.default_interface.is_none() {
                     tracing::warn!(
                         "检测到 auto_route=true 的 TUN 入站，但 route.auto_detect_interface \
                          未开启（且未设置 default_interface）：本平台 direct 出站 socket \

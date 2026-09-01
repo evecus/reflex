@@ -341,7 +341,10 @@ pub mod windows_iface {
     ///   - UDP socket 额外绑定 `IP_MULTICAST_IF` / `IPV6_MULTICAST_IF`
     ///   - dual-stack IPv6 socket 回退绑定 IPv4 接口
     ///   - 跳过 loopback 目标（绑定接口会阻止访问 localhost）
-    pub fn bind_socket_to_physical_interface(raw_socket: std::os::windows::io::RawSocket, target: IpAddr) {
+    pub fn bind_socket_to_physical_interface(
+        raw_socket: std::os::windows::io::RawSocket,
+        target: IpAddr,
+    ) {
         // 跳过 loopback：绑定物理接口会导致无法访问 localhost（对齐 clash-rs
         // socket_helpers：`!endpoint.ip().is_loopback()` 才绑定）
         if target.is_loopback() {
@@ -349,8 +352,8 @@ pub mod windows_iface {
         }
 
         use ::windows::Win32::Networking::WinSock::{
-            setsockopt, IPPROTO_IP, IPPROTO_IPV6, IP_UNICAST_IF, IPV6_UNICAST_IF,
-            IP_MULTICAST_IF, IPV6_MULTICAST_IF, SOCKET,
+            setsockopt, IPPROTO_IP, IPPROTO_IPV6, IPV6_MULTICAST_IF, IPV6_UNICAST_IF,
+            IP_MULTICAST_IF, IP_UNICAST_IF, SOCKET,
         };
 
         let sock = SOCKET(raw_socket as usize);
@@ -365,15 +368,14 @@ pub mod windows_iface {
                         let rc = setsockopt(sock, IPPROTO_IP.0, IP_UNICAST_IF, Some(&bytes));
                         if rc != 0 {
                             tracing::warn!(
-                                err = rc, idx,
+                                err = rc,
+                                idx,
                                 "windows_iface: IP_UNICAST_IF setsockopt failed"
                             );
                         }
                         // UDP 组播也需要绑定到物理接口（对齐 clash-rs win.rs L66-70）。
                         // 对 TCP socket 设置会返回错误但无害（TCP 不支持组播）。
-                        let _ = setsockopt(
-                            sock, IPPROTO_IP.0, IP_MULTICAST_IF, Some(&bytes),
-                        );
+                        let _ = setsockopt(sock, IPPROTO_IP.0, IP_MULTICAST_IF, Some(&bytes));
                     }
                 } else {
                     tracing::debug!(
@@ -390,13 +392,12 @@ pub mod windows_iface {
                         let rc = setsockopt(sock, IPPROTO_IPV6.0, IPV6_UNICAST_IF, Some(&bytes));
                         if rc != 0 {
                             tracing::warn!(
-                                err = rc, idx,
+                                err = rc,
+                                idx,
                                 "windows_iface: IPV6_UNICAST_IF setsockopt failed"
                             );
                         }
-                        let _ = setsockopt(
-                            sock, IPPROTO_IPV6.0, IPV6_MULTICAST_IF, Some(&bytes),
-                        );
+                        let _ = setsockopt(sock, IPPROTO_IPV6.0, IPV6_MULTICAST_IF, Some(&bytes));
                     }
                 }
                 // dual-stack 回退：IPv6 socket 也尝试绑定 IPv4 接口（对齐 clash-rs
@@ -619,9 +620,8 @@ pub mod local_ranges {
     }
 
     fn stale() -> bool {
-        now_secs().saturating_sub(LAST_REFRESH_SECS.load(
-            portable_atomic::Ordering::Relaxed,
-        )) > REFRESH_TTL.as_secs()
+        now_secs().saturating_sub(LAST_REFRESH_SECS.load(portable_atomic::Ordering::Relaxed))
+            > REFRESH_TTL.as_secs()
     }
 
     /// 重新枚举本机网卡地址段并更新缓存。
@@ -711,9 +711,8 @@ pub mod local_ranges {
                 match (*r.ifa_addr).sa_family as i32 {
                     libc::AF_INET => {
                         let sa = &*(r.ifa_addr as *const libc::sockaddr_in);
-                        let ip = IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(
-                            sa.sin_addr.s_addr,
-                        )));
+                        let ip =
+                            IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr)));
                         let plen = if !r.ifa_netmask.is_null() {
                             let nm = &*(r.ifa_netmask as *const libc::sockaddr_in);
                             u32::from_be(nm.sin_addr.s_addr).count_ones() as u8
@@ -724,8 +723,7 @@ pub mod local_ranges {
                     }
                     libc::AF_INET6 => {
                         let sa = &*(r.ifa_addr as *const libc::sockaddr_in6);
-                        let ip =
-                            IpAddr::V6(std::net::Ipv6Addr::from(sa.sin6_addr.s6_addr));
+                        let ip = IpAddr::V6(std::net::Ipv6Addr::from(sa.sin6_addr.s6_addr));
                         let plen = if !r.ifa_netmask.is_null() {
                             let nm = &*(r.ifa_netmask as *const libc::sockaddr_in6);
                             nm.sin6_addr
@@ -793,17 +791,16 @@ pub mod local_ranges {
                                 2 => {
                                     // AF_INET
                                     let sa4 = *(sa as *const SOCKADDR_IN);
-                                    let ip = IpAddr::V4(std::net::Ipv4Addr::from(
-                                        u32::from_be(sa4.sin_addr.S_un.S_addr),
-                                    ));
+                                    let ip = IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(
+                                        sa4.sin_addr.S_un.S_addr,
+                                    )));
                                     out.push((ip, u.OnLinkPrefixLength as u8));
                                 }
                                 23 => {
                                     // AF_INET6
                                     let sa6 = *(sa as *const SOCKADDR_IN6);
-                                    let ip = IpAddr::V6(std::net::Ipv6Addr::from(
-                                        sa6.sin6_addr.u.Byte,
-                                    ));
+                                    let ip =
+                                        IpAddr::V6(std::net::Ipv6Addr::from(sa6.sin6_addr.u.Byte));
                                     out.push((ip, u.OnLinkPrefixLength as u8));
                                 }
                                 _ => {}
@@ -823,10 +820,7 @@ pub mod local_ranges {
     #[doc(hidden)]
     pub fn set_for_test(prefixes: Vec<(IpAddr, u8)>) {
         *PREFIXES.write().unwrap_or_else(|e| e.into_inner()) = prefixes;
-        LAST_REFRESH_SECS.store(
-            now_secs() + 3600,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        LAST_REFRESH_SECS.store(now_secs() + 3600, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

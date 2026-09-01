@@ -777,7 +777,10 @@ fn build_profile() -> &'static str {
 fn enabled_features() -> Vec<&'static str> {
     let mut feats = Vec::new();
     // feature 名仍叫 jemalloc，但 Windows 端实际启用的分配器是 mimalloc
-    if cfg!(all(target_os = "windows", any(feature = "jemalloc", feature = "mimalloc"))) {
+    if cfg!(all(
+        target_os = "windows",
+        any(feature = "jemalloc", feature = "mimalloc")
+    )) {
         feats.push("mimalloc");
     } else if cfg!(feature = "jemalloc") {
         feats.push("jemalloc");

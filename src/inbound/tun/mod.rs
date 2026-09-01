@@ -882,7 +882,7 @@ fn build_icmpv6_port_unreachable(orig: &[u8]) -> Option<Vec<u8>> {
     pkt[7] = SYNTHESIZED_TTL;
     pkt[8..24].copy_from_slice(&orig[24..40]); // src = 原 dst
     pkt[24..40].copy_from_slice(&orig[8..24]); // dst = 原 src
-    // ICMPv6：type=1 (DstUnreachable), code=4 (Port Unreachable)，unused=0
+                                               // ICMPv6：type=1 (DstUnreachable), code=4 (Port Unreachable)，unused=0
     pkt[40] = 1;
     pkt[41] = 4;
     pkt[48..48 + payload_len].copy_from_slice(&orig[..payload_len]);
@@ -989,11 +989,7 @@ impl TunInbound {
     /// 注入路由器与出站管理器，启用 TUN 入站 ICMP 路由策略
     /// （对齐 sing-box 1.13.0 `network:"icmp"` 规则匹配）。
     /// 在 run() 之前调用；未注入时 ICMP 转发器退化为始终转发的旧行为。
-    pub fn with_router(
-        mut self,
-        router: Arc<Router>,
-        outbound_mgr: Arc<OutboundManager>,
-    ) -> Self {
+    pub fn with_router(mut self, router: Arc<Router>, outbound_mgr: Arc<OutboundManager>) -> Self {
         self.router = Some(router);
         self.outbound_mgr = Some(outbound_mgr);
         self
@@ -1211,93 +1207,93 @@ impl TunInbound {
                 anyhow::bail!("tun: file_descriptor is only supported on Unix platforms");
             }
             None => {
-            let mut tun_cfg = tun::Configuration::default();
-            tun_cfg.mtu(cfg.mtu as u16);
-            tun_cfg.up();
+                let mut tun_cfg = tun::Configuration::default();
+                tun_cfg.mtu(cfg.mtu as u16);
+                tun_cfg.up();
 
-            // 接口名：tun_name() 是 tun 0.8 的新 API（name() 已废弃）
-            if let Some(ref name) = cfg.interface_name {
-                tun_cfg.tun_name(name);
-            }
-
-            if let Some(ip) = inet4_server_addr {
-                if let Some((_, prefix_len)) = cfg
-                    .address
-                    .iter()
-                    .find_map(|s| parse_addr_prefix(s).filter(|(a, _)| a.is_ipv4()))
-                {
-                    tun_cfg
-                        .address(ip)
-                        .netmask(prefix_len_to_mask_v4(prefix_len));
+                // 接口名：tun_name() 是 tun 0.8 的新 API（name() 已废弃）
+                if let Some(ref name) = cfg.interface_name {
+                    tun_cfg.tun_name(name);
                 }
-            }
 
-            // ── 平台特有配置 ─────────────────────────────────────────────────
-            // tun 0.8（合并自 tun2）的 API：platform() → platform_config()
-
-            #[cfg(target_os = "linux")]
-            tun_cfg.platform_config(|p| {
-                // tun 0.8 起所有平台包都**不含** PI 头（packet_information 已废弃）
-                // ensure_root_privileges：自动处理 /dev/net/tun 权限
-                p.ensure_root_privileges(true);
-                // 启用 IFF_VNET_HDR 以支持 GSO/GRO 卸载（对齐 sing-tun enableGSO）。
-                // 启用后每个读写的数据包前会带 10 字节 virtio_net_hdr。
-                p.vnet_hdr(true);
-            });
-
-            #[cfg(target_os = "windows")]
-            {
-                // device_guid：为 wintun 适配器指定固定 GUID，避免每次启动创建新适配器
-                // 用接口名做种子生成确定性 UUID（与 clash-rs 策略一致）
-                let guid_seed = cfg.interface_name.as_deref().unwrap_or("wintun").as_bytes();
-                // 简单 hash → u128（不依赖 uuid crate）
-                let mut guid: u128 = 0xdeadbeef_cafebabe_12345678_9abcdef0;
-                for (i, &b) in guid_seed.iter().enumerate() {
-                    guid ^= (b as u128).wrapping_shl((i % 16) as u32 * 8);
-                    guid = guid.wrapping_mul(0x6c62272e07bb0142_u128);
+                if let Some(ip) = inet4_server_addr {
+                    if let Some((_, prefix_len)) = cfg
+                        .address
+                        .iter()
+                        .find_map(|s| parse_addr_prefix(s).filter(|(a, _)| a.is_ipv4()))
+                    {
+                        tun_cfg
+                            .address(ip)
+                            .netmask(prefix_len_to_mask_v4(prefix_len));
+                    }
                 }
-                // 释放内嵌的 wintun.dll 到临时目录（对齐 sing-tun ensureWintunDLL），
-                // 让 tun crate 从该路径加载，无需用户单独分发 wintun.dll。
-                let wintun_path = platform::windows::extract_embedded_wintun();
+
+                // ── 平台特有配置 ─────────────────────────────────────────────────
+                // tun 0.8（合并自 tun2）的 API：platform() → platform_config()
+
+                #[cfg(target_os = "linux")]
                 tun_cfg.platform_config(|p| {
-                    p.device_guid(guid);
-                    p.wintun_file(&wintun_path);
+                    // tun 0.8 起所有平台包都**不含** PI 头（packet_information 已废弃）
+                    // ensure_root_privileges：自动处理 /dev/net/tun 权限
+                    p.ensure_root_privileges(true);
+                    // 启用 IFF_VNET_HDR 以支持 GSO/GRO 卸载（对齐 sing-tun enableGSO）。
+                    // 启用后每个读写的数据包前会带 10 字节 virtio_net_hdr。
+                    p.vnet_hdr(true);
                 });
-                // ring 容量 8MB（对齐 sing-tun tun_windows.go StartSession(0x800000)）。
-                // tun crate 默认用 64MB 上限，每个适配器多占 56MB 内核内存。
-                tun_cfg.ring_capacity(0x800_000);
-            }
 
-            let dev = tun::create_as_async(&tun_cfg)
-                .map_err(|e| anyhow::anyhow!("failed to create TUN device: {e}"))?;
-
-            // 获取实际接口名。
-            // tun 0.8 在 Linux/macOS 下 dev.tun_name() 返回内核分配的真实名称；
-            // Windows 下 wintun 适配器名由 device_guid 决定，以 PowerShell 查询为准。
-            #[cfg(not(target_os = "windows"))]
-            let if_name = {
-                match dev.tun_name() {
-                    Ok(name) if !name.is_empty() => name,
-                    _ => cfg
-                        .interface_name
-                        .clone()
-                        .unwrap_or_else(|| "tun0".to_string()),
+                #[cfg(target_os = "windows")]
+                {
+                    // device_guid：为 wintun 适配器指定固定 GUID，避免每次启动创建新适配器
+                    // 用接口名做种子生成确定性 UUID（与 clash-rs 策略一致）
+                    let guid_seed = cfg.interface_name.as_deref().unwrap_or("wintun").as_bytes();
+                    // 简单 hash → u128（不依赖 uuid crate）
+                    let mut guid: u128 = 0xdeadbeef_cafebabe_12345678_9abcdef0;
+                    for (i, &b) in guid_seed.iter().enumerate() {
+                        guid ^= (b as u128).wrapping_shl((i % 16) as u32 * 8);
+                        guid = guid.wrapping_mul(0x6c62272e07bb0142_u128);
+                    }
+                    // 释放内嵌的 wintun.dll 到临时目录（对齐 sing-tun ensureWintunDLL），
+                    // 让 tun crate 从该路径加载，无需用户单独分发 wintun.dll。
+                    let wintun_path = platform::windows::extract_embedded_wintun();
+                    tun_cfg.platform_config(|p| {
+                        p.device_guid(guid);
+                        p.wintun_file(&wintun_path);
+                    });
+                    // ring 容量 8MB（对齐 sing-tun tun_windows.go StartSession(0x800000)）。
+                    // tun crate 默认用 64MB 上限，每个适配器多占 56MB 内核内存。
+                    tun_cfg.ring_capacity(0x800_000);
                 }
-            };
 
-            #[cfg(target_os = "windows")]
-            let if_name = {
-                // wintun 适配器创建后名称由 guid 决定，需要通过 PowerShell 查询实际名称
-                // 等待最多 3s 让适配器在系统中注册
-                // 注意：tun crate 0.8 在 Windows 上创建适配器时，缺省接口名是 "wintun"
-                // （tun-0.8.x/src/platform/windows/device.rs: tun_name.unwrap_or("wintun")），
-                // 必须与之一致，否则用 "tun0" 查询不到接口，后续 netsh/Win32 配置全部落空
-                // （对齐 sing-tun：CreateAdapter(options.Name, ...) 直接用 options.Name）。
-                let expected = cfg.interface_name.as_deref().unwrap_or("wintun");
-                platform::resolve_actual_interface_name(expected)
-            };
+                let dev = tun::create_as_async(&tun_cfg)
+                    .map_err(|e| anyhow::anyhow!("failed to create TUN device: {e}"))?;
 
-            (TunDevice::Crate(dev), if_name)
+                // 获取实际接口名。
+                // tun 0.8 在 Linux/macOS 下 dev.tun_name() 返回内核分配的真实名称；
+                // Windows 下 wintun 适配器名由 device_guid 决定，以 PowerShell 查询为准。
+                #[cfg(not(target_os = "windows"))]
+                let if_name = {
+                    match dev.tun_name() {
+                        Ok(name) if !name.is_empty() => name,
+                        _ => cfg
+                            .interface_name
+                            .clone()
+                            .unwrap_or_else(|| "tun0".to_string()),
+                    }
+                };
+
+                #[cfg(target_os = "windows")]
+                let if_name = {
+                    // wintun 适配器创建后名称由 guid 决定，需要通过 PowerShell 查询实际名称
+                    // 等待最多 3s 让适配器在系统中注册
+                    // 注意：tun crate 0.8 在 Windows 上创建适配器时，缺省接口名是 "wintun"
+                    // （tun-0.8.x/src/platform/windows/device.rs: tun_name.unwrap_or("wintun")），
+                    // 必须与之一致，否则用 "tun0" 查询不到接口，后续 netsh/Win32 配置全部落空
+                    // （对齐 sing-tun：CreateAdapter(options.Name, ...) 直接用 options.Name）。
+                    let expected = cfg.interface_name.as_deref().unwrap_or("wintun");
+                    platform::resolve_actual_interface_name(expected)
+                };
+
+                (TunDevice::Crate(dev), if_name)
             }
         };
 
@@ -1631,29 +1627,29 @@ impl TunInbound {
             });
         }
 
-// ── TCP accept loop ──────────────────────────────────────────────────
-// 对齐 sing-tun acceptLoop（stack_system.go:331-346）：TUN 前缀内目标
-// 改写为 loopback 后再交付出站处理（R2 修复）。
-if let Some(listener) = tcp_listener_v4.clone() {
-    let nat = tcp_nat.clone();
-    let tx = self.tcp_tx.clone();
-    let tag2 = tag.clone();
-    let p4 = inet4_prefixes.clone();
-    let p6 = inet6_prefixes.clone();
-    tokio::spawn(async move {
-        accept_loop(listener, nat, tx, tag2, p4, p6).await;
-    });
-}
-if let Some(listener) = tcp_listener_v6.clone() {
-    let nat = tcp_nat.clone();
-    let tx = self.tcp_tx.clone();
-    let tag2 = tag.clone();
-    let p4 = inet4_prefixes.clone();
-    let p6 = inet6_prefixes.clone();
-    tokio::spawn(async move {
-        accept_loop(listener, nat, tx, tag2, p4, p6).await;
-    });
-}
+        // ── TCP accept loop ──────────────────────────────────────────────────
+        // 对齐 sing-tun acceptLoop（stack_system.go:331-346）：TUN 前缀内目标
+        // 改写为 loopback 后再交付出站处理（R2 修复）。
+        if let Some(listener) = tcp_listener_v4.clone() {
+            let nat = tcp_nat.clone();
+            let tx = self.tcp_tx.clone();
+            let tag2 = tag.clone();
+            let p4 = inet4_prefixes.clone();
+            let p6 = inet6_prefixes.clone();
+            tokio::spawn(async move {
+                accept_loop(listener, nat, tx, tag2, p4, p6).await;
+            });
+        }
+        if let Some(listener) = tcp_listener_v6.clone() {
+            let nat = tcp_nat.clone();
+            let tx = self.tcp_tx.clone();
+            let tag2 = tag.clone();
+            let p4 = inet4_prefixes.clone();
+            let p6 = inet6_prefixes.clone();
+            tokio::spawn(async move {
+                accept_loop(listener, nat, tx, tag2, p4, p6).await;
+            });
+        }
 
         // ── UDP 会话表 ───────────────────────────────────────────────────────
         let udp_sessions: Arc<Mutex<HashMap<SocketAddr, UdpEntry>>> =
@@ -1860,9 +1856,7 @@ if let Some(listener) = tcp_listener_v6.clone() {
                         // reassembly；旧实现直接丢弃分片，IPv6 大包黑洞）。
                         // 完成后按普通包走 process_ipv6（TCP/UDP/ICMP 统一）。
                         if pkt_slice.len() >= 48 && ip_defrag::ipv6_is_fragment(pkt_slice) {
-                            if let Some(full) =
-                                defragmenter.feed_ipv6(pkt_slice, Instant::now())
-                            {
+                            if let Some(full) = defragmenter.feed_ipv6(pkt_slice, Instant::now()) {
                                 process_ipv6(
                                     &full,
                                     inet6_server_addr,
@@ -2432,26 +2426,26 @@ pub(crate) async fn handle_tcp_v4(
     let src = SocketAddr::V4(SocketAddrV4::new(src_ip, src_port));
     let dst = SocketAddr::V4(SocketAddrV4::new(dst_ip, dst_port));
 
-let nat_port = match tcp_nat.lookup_or_insert(src, dst).await {
-Some(p) => p,
-None => {
-// 端口池耗尽：回 RST 并丢弃新连接（对齐 sing-tun
-// processIPv4TCP L470-472；sing-tun 在 PrepareConnection
-// 失败时同样回 RST，客户端立即感知拒绝而非等到超时）
-warn!("tun: tcp v4 NAT port space exhausted, sending RST");
-if tcp_payload.len() >= 8 {
-let client_seq = u32::from_be_bytes([
-tcp_payload[4],
-tcp_payload[5],
-tcp_payload[6],
-tcp_payload[7],
-]);
-let rst = build_tcp_rst_v4(dst_ip, src_ip, dst_port, src_port, client_seq);
-tun_write(&writer, &rst, false).await;
-}
-return;
-}
-};
+    let nat_port = match tcp_nat.lookup_or_insert(src, dst).await {
+        Some(p) => p,
+        None => {
+            // 端口池耗尽：回 RST 并丢弃新连接（对齐 sing-tun
+            // processIPv4TCP L470-472；sing-tun 在 PrepareConnection
+            // 失败时同样回 RST，客户端立即感知拒绝而非等到超时）
+            warn!("tun: tcp v4 NAT port space exhausted, sending RST");
+            if tcp_payload.len() >= 8 {
+                let client_seq = u32::from_be_bytes([
+                    tcp_payload[4],
+                    tcp_payload[5],
+                    tcp_payload[6],
+                    tcp_payload[7],
+                ]);
+                let rst = build_tcp_rst_v4(dst_ip, src_ip, dst_port, src_port, client_seq);
+                tun_write(&writer, &rst, false).await;
+            }
+            return;
+        }
+    };
 
     let mut pkt = raw.to_vec();
     // 与 sing-tun processIPv4TCP L418-421 对齐：
@@ -2567,25 +2561,25 @@ pub(crate) async fn handle_tcp_v6(
 
     let src = SocketAddr::V6(SocketAddrV6::new(src_ip, src_port, 0, 0));
     let dst = SocketAddr::V6(SocketAddrV6::new(dst_ip, dst_port, 0, 0));
-let nat_port = match tcp_nat.lookup_or_insert(src, dst).await {
-Some(p) => p,
-None => {
-// 端口池耗尽：回 RST 并丢弃新连接（对齐 sing-tun
-// processIPv6TCP L507-509 + PrepareConnection 失败 → RST）
-warn!("tun: tcp v6 NAT port space exhausted, sending RST");
-if tcp_payload.len() >= 8 {
-let client_seq = u32::from_be_bytes([
-tcp_payload[4],
-tcp_payload[5],
-tcp_payload[6],
-tcp_payload[7],
-]);
-let rst = build_tcp_rst_v6(dst_ip, src_ip, dst_port, src_port, client_seq);
-tun_write(&writer, &rst, true).await;
-}
-return;
-}
-};
+    let nat_port = match tcp_nat.lookup_or_insert(src, dst).await {
+        Some(p) => p,
+        None => {
+            // 端口池耗尽：回 RST 并丢弃新连接（对齐 sing-tun
+            // processIPv6TCP L507-509 + PrepareConnection 失败 → RST）
+            warn!("tun: tcp v6 NAT port space exhausted, sending RST");
+            if tcp_payload.len() >= 8 {
+                let client_seq = u32::from_be_bytes([
+                    tcp_payload[4],
+                    tcp_payload[5],
+                    tcp_payload[6],
+                    tcp_payload[7],
+                ]);
+                let rst = build_tcp_rst_v6(dst_ip, src_ip, dst_port, src_port, client_seq);
+                tun_write(&writer, &rst, true).await;
+            }
+            return;
+        }
+    };
 
     let mut pkt = raw.to_vec();
     // 与 sing-tun processIPv6TCP L513-516 对齐：

@@ -314,7 +314,12 @@ pub mod linux_impl {
                 for b in &mut self.gso_out_bufs {
                     b.clear();
                 }
-                let count = match gso::gso_split(pkt, &options, &mut self.gso_out_bufs, &mut self.gso_sizes) {
+                let count = match gso::gso_split(
+                    pkt,
+                    &options,
+                    &mut self.gso_out_bufs,
+                    &mut self.gso_sizes,
+                ) {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::warn!(err = %e, "tun: gso_split failed, dropping packet");
@@ -329,9 +334,7 @@ pub mod linux_impl {
                     self.pending_segments.push(seg);
                 }
                 // 消费到 bufs
-                while self.pending_idx < self.pending_segments.len()
-                    && result.len() < bufs.len()
-                {
+                while self.pending_idx < self.pending_segments.len() && result.len() < bufs.len() {
                     let seg = std::mem::take(&mut self.pending_segments[self.pending_idx]);
                     let len = seg.len();
                     bufs[result.len()] = seg;

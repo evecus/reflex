@@ -50,9 +50,7 @@ impl TcpStream {
     /// 并发送 RST（对齐 sing-tun NAT 失败时 Close() 的 RST 语义），
     /// 而不是走 Drop 的 drain-then-FIN 路径。
     pub(crate) fn abort(&self) {
-        self.handle
-            .abort_requested
-            .store(true, Ordering::Release);
+        self.handle.abort_requested.store(true, Ordering::Release);
         self.handle.read_closed.store(true, Ordering::Release);
         self.handle.write_closed.store(true, Ordering::Release);
         self.handle.recv_waker.wake();

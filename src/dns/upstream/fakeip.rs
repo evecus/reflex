@@ -650,7 +650,9 @@ mod tests {
         let store = new_store_v4();
 
         // 全小写基线
-        let lower = store.reply(&make_fakeip_query("case.example.com", 1)).unwrap();
+        let lower = store
+            .reply(&make_fakeip_query("case.example.com", 1))
+            .unwrap();
         let lower_ip: [u8; 4] = lower[lower.len() - 4..].try_into().unwrap();
 
         // 各种大小写变体必须返回同一个 IP

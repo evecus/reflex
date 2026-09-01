@@ -3248,7 +3248,10 @@ mod tests {
 
         // 验证过滤语义：min_rank=info 时，debug 被过滤，info+ 通过
         let min_rank = log_level_rank("info");
-        assert!(log_level_rank("debug") < min_rank, "debug 应被 info 级别过滤");
+        assert!(
+            log_level_rank("debug") < min_rank,
+            "debug 应被 info 级别过滤"
+        );
         assert!(
             log_level_rank("info") >= min_rank,
             "info 应通过 info 级别过滤"

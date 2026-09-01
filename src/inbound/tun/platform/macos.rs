@@ -98,7 +98,8 @@ fn v4_intersects(e_net: Ipv4Addr, e_pl: u8, net: Ipv4Addr, pl: u8) -> bool {
     } else {
         (net, pl, e_net)
     };
-    (u32::from(fine_net) & v4_prefix_mask(coarse_pl)) == (u32::from(coarse_net) & v4_prefix_mask(coarse_pl))
+    (u32::from(fine_net) & v4_prefix_mask(coarse_pl))
+        == (u32::from(coarse_net) & v4_prefix_mask(coarse_pl))
 }
 
 fn v6_intersects(e_net: Ipv6Addr, e_pl: u8, net: Ipv6Addr, pl: u8) -> bool {
@@ -107,7 +108,8 @@ fn v6_intersects(e_net: Ipv6Addr, e_pl: u8, net: Ipv6Addr, pl: u8) -> bool {
     } else {
         (net, pl, e_net)
     };
-    (u128::from(fine_net) & v6_prefix_mask(coarse_pl)) == (u128::from(coarse_net) & v6_prefix_mask(coarse_pl))
+    (u128::from(fine_net) & v6_prefix_mask(coarse_pl))
+        == (u128::from(coarse_net) & v6_prefix_mask(coarse_pl))
 }
 
 fn fully_excluded_v4(net: Ipv4Addr, pl: u8, excludes: &[(Ipv4Addr, u8)]) -> bool {
@@ -326,9 +328,7 @@ impl RouteSocket {
             )
         };
 
-        info!(
-            "tun: utun advanced socket options applied (SO_SNDBUF/SO_RCVBUF=4MB, SO_NOSIGPIPE)"
-        );
+        info!("tun: utun advanced socket options applied (SO_SNDBUF/SO_RCVBUF=4MB, SO_NOSIGPIPE)");
     }
 
     /// 添加路由条目。
@@ -413,11 +413,9 @@ fn get_default_gateway_v6() -> Option<IpAddr> {
 
 /// 查询当前系统默认网关 (v4, v6)。默认路由变化监控用。
 pub async fn current_default_gateways() -> (Option<IpAddr>, Option<IpAddr>) {
-    tokio::task::spawn_blocking(|| {
-        (get_default_gateway_v4(), get_default_gateway_v6())
-    })
-    .await
-    .unwrap_or((None, None))
+    tokio::task::spawn_blocking(|| (get_default_gateway_v4(), get_default_gateway_v6()))
+        .await
+        .unwrap_or((None, None))
 }
 
 /// 解析 `route -n get [-inet6] default` 输出里的 `interface:` 行，拿到物理默认

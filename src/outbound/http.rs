@@ -34,8 +34,7 @@ use crate::{
     dns::DnsResolver,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
     outbound::{
-        apply_mark_to_tcp, relay, resolve_server_addr, set_tcp_opts,
-        tls::connect_tls_or_utls,
+        apply_mark_to_tcp, relay, resolve_server_addr, set_tcp_opts, tls::connect_tls_or_utls,
         AsyncReadWrite, Outbound, OutboundStatus,
     },
 };
@@ -346,16 +345,15 @@ mod tests {
 
     #[test]
     fn take_host_and_headers_extracts_host_case_insensitive() {
-        use crate::config::outbound::{HttpHeaderValue, HttpHeadersConfig, HttpOutboundConfig, TlsConfig};
+        use crate::config::outbound::{
+            HttpHeaderValue, HttpHeadersConfig, HttpOutboundConfig, TlsConfig,
+        };
         let mut map = std::collections::HashMap::new();
         map.insert(
             "hOsT".to_string(),
             HttpHeaderValue::Single("custom.internal".into()),
         );
-        map.insert(
-            "X-Extra".to_string(),
-            HttpHeaderValue::Single("v".into()),
-        );
+        map.insert("X-Extra".to_string(), HttpHeaderValue::Single("v".into()));
         let cfg = HttpOutboundConfig {
             tag: "t".into(),
             server: "example.com".into(),

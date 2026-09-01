@@ -188,10 +188,10 @@ pub async fn sniff(
         }
         let n = match tokio::time::timeout_at(deadline, stream.inner.read(&mut buf[total..])).await
         {
-            Ok(Ok(0)) => break,      // EOF
+            Ok(Ok(0)) => break, // EOF
             Ok(Ok(n)) => n,
-            Ok(Err(_)) => break,     // 读错误，停止
-            Err(_) => break,         // 超时
+            Ok(Err(_)) => break, // 读错误，停止
+            Err(_) => break,     // 超时
         };
         if n == 0 {
             break;
@@ -535,9 +535,9 @@ mod sniff_filter_tests {
     #[test]
     fn should_sniff_filters() {
         let filter = SniffFilter::from_config(
-            vec![], // 不限制
+            vec![],                                   // 不限制
             vec![".local".into(), "test.com".into()], // 黑名单
-            vec!["127.0.0.0/8".into()], // 源 IP 黑名单
+            vec!["127.0.0.0/8".into()],               // 源 IP 黑名单
         );
 
         // 普通域名不在黑名单中
@@ -2021,7 +2021,10 @@ mod tests {
         let result = try_tls(&hello);
         assert!(matched(&result), "TLS without SNI should still be detected");
         assert_eq!(protocol(&result), Some("tls"));
-        assert!(domain(&result).is_none(), "domain should be None without SNI");
+        assert!(
+            domain(&result).is_none(),
+            "domain should be None without SNI"
+        );
     }
 
     #[test]
@@ -2159,7 +2162,7 @@ mod tests {
         // TLS
         assert!(first_byte_matches_tcp(0x16, SniffType::Tls));
         assert!(!first_byte_matches_tcp(0x47, SniffType::Tls)); // 'G'
-        // HTTP
+                                                                // HTTP
         assert!(first_byte_matches_tcp(b'G', SniffType::Http));
         assert!(first_byte_matches_tcp(b'P', SniffType::Http));
         assert!(!first_byte_matches_tcp(0x16, SniffType::Http));

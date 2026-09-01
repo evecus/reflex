@@ -8,8 +8,8 @@
 //! 关闭信号，信号到达 → 循环 break → 任务自然收尾（含 teardown）→ main
 //! 在宽限期（5s）内 `app.wait()` 等它们全部退出。
 
-use tokio::sync::watch;
 use std::sync::OnceLock;
+use tokio::sync::watch;
 
 static TX: OnceLock<watch::Sender<bool>> = OnceLock::new();
 static RX: OnceLock<watch::Receiver<bool>> = OnceLock::new();
@@ -22,7 +22,10 @@ fn ensure_init() -> (&'static watch::Sender<bool>, &'static watch::Receiver<bool
     // set 可能与其他线程竞争失败，失败时以已注册的一侧为准
     let _ = TX.set(tx);
     let _ = RX.set(rx.clone());
-    (TX.get().expect("shutdown TX"), RX.get().expect("shutdown RX"))
+    (
+        TX.get().expect("shutdown TX"),
+        RX.get().expect("shutdown RX"),
+    )
 }
 
 /// 初始化（幂等）。main 启动时调用一次；`subscribe` 内部也会兜底初始化。
