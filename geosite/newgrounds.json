@@ -3,9 +3,8 @@
   "rules": [
     {
       "domain_suffix": [
-        "ads.yahoo.com",
-        "gemini.yahoo.com",
-        "ysm.yahoo.com"
+        "newgrounds.com",
+        "ngfiles.com"
       ]
     }
   ]

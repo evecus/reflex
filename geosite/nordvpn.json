@@ -3,8 +3,8 @@
   "rules": [
     {
       "domain_suffix": [
-        "yahoo.cn",
-        "yahoo.com.cn"
+        "nordcdn.com",
+        "nordvpn.com"
       ]
     }
   ]
