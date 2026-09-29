@@ -166,6 +166,7 @@ jobs:
             build \
             --release \
             --locked \
+            --no-default-features \
             --bin reflex
 
       # ── 收集产物（Linux：直接二进制；Windows：.exe） ────────────────────
