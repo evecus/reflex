@@ -31,7 +31,9 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+// 用 portable_atomic：mips/mipsel 等 32 位平台 std 不提供 AtomicU64。
+use portable_atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
