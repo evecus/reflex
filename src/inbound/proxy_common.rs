@@ -193,7 +193,7 @@ pub fn duplicate_tcp_stream(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::{AsRawSocket, FromRawSocket};
+        use std::os::windows::io::{AsRawSocket, FromRawSocket, RawSocket};
         use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
         use windows::Win32::System::Threading::GetCurrentProcess;
 
@@ -214,7 +214,9 @@ pub fn duplicate_tcp_stream(
         }
         let std_stream = unsafe {
             // SAFETY: 复制出的 SOCKET 所有权移交 std TcpStream
-            std::net::TcpStream::from_raw_socket(dup_handle.0 as u64)
+            // 注意：Windows SOCKET 为指针宽度（RawSocket = usize）：
+            // i686 上为 u32、x86_64 上为 u64，故向 RawSocket 转换而非写死 u64
+            std::net::TcpStream::from_raw_socket(dup_handle.0 as RawSocket)
         };
         std_stream.set_nonblocking(true)?;
         // SAFETY: 非阻塞 std stream 所有权移交 tokio
